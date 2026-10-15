@@ -40,7 +40,7 @@ CONVERGENCE_RETRIES = [
     ".options reltol=0.003 method=gear",
     ".options reltol=0.01 method=gear itl1=500 itl4=200 gmin=1e-10",
 ]
-RETRY_TIMEOUT = 120.0      # seconds a relaxed-settings retry may take
+RETRY_TIMEOUT = 30.0       # seconds a relaxed-settings retry may take
 _NONCONVERGENCE = ("timestep too small", "gmin stepping failed", "source stepping failed",
                    "could not be simulated", "no convergence")
 

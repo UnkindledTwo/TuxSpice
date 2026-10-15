@@ -7,6 +7,8 @@ It does not need Wine.
 
 It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
 
+![TuxSpice simulating the OP113 example: transient waveforms of V(IN) and V(OUT) above the schematic](example.png)
+
 > The Python package and command are still called `pyltspice`, so the commands below use that name.
 
 ## Features

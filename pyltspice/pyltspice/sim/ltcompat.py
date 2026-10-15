@@ -131,7 +131,7 @@ def standard_model(name: str) -> str | None:
     return _standard_cards().get(name.lower())
 
 
-LIB_CACHE_VERSION = "15"     # bump when rewrite_device_line changes
+LIB_CACHE_VERSION = "17"     # bump when rewrite_device_line changes
 
 
 def passed_params(lines) -> dict:

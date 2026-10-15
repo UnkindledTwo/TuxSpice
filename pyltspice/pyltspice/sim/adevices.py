@@ -83,6 +83,24 @@ def expand(tok, warnings: list) -> list[str] | None:
 
 # ---------------------------------------------------------------- analog helpers
 
+def _sig(x):
+    """Smooth step 0..1 (tanh form never overflows)."""
+    return f"(0.5*(1+tanh({x})))"
+
+
+def _latch(name, tag, vin, vt, vh, tau=1e-8):
+    """Comparator with hysteresis: a state node s in 0..1 that heads for 1 when
+    vin > vt+vh (or > vt-vh once already high). Transitions are smooth (tanh) so the
+    simulator's time step doesn't collapse. Returns (lines, state node)."""
+    s = f"{name}_{tag}"
+    w = f"(max(abs({vh})/10,1m))"                         # width of the decision region
+    thr = f"({vt}+({vh})*(1-2*{_sig(f'(V({s})-0.5)*20')}))"
+    target = _sig(f"(({vin})-{thr})/{w}")
+    return [f"B{name}_{tag} 0 {s} I=({target}-V({s}))*1e-3",
+            f"C{name}_{tag} {s} 0 {tau * 1e-3:.6g}",
+            f"R{name}_{tag} {s} 0 1e12"], s
+
+
 def _out_stage(name, target_expr, out, com, params, suffix=""):
     """Drive `out` toward target (volts rel. com) through Rout, plus Cout/Tau."""
     rout = num(params.get("rout", "1"))
@@ -260,11 +278,8 @@ def _schmitt(name, n, params):
     vt = num(params["vt"]) if "vt" in params else f"(({vhigh}+{vlow})/2)"
     vh = num(params.get("vh", "0"))
     vin = f"V({n1},{n2})"
-    s = f"{name}_s"
-    tau = _fnum(params.get("trise", "0"), 0.0) / 2.2 or 1e-9
-    lines = [f"B{name}_st 0 {s} I=((({vin}) > (V({s})>0.5 ? {vt}-{vh} : {vt}+{vh}) ? 1 : 0)-V({s}))*1e-3",
-             f"C{name}_st {s} 0 {tau * 1e-3:.6g}",
-             f"R{name}_st {s} 0 1e12"]
+    tau = _fnum(params.get("trise", "0"), 0.0) / 2.2 or 1e-8
+    lines, s = _latch(name, "st", vin, vt, vh, tau)
     if nq != com:
         lines += _out_stage(name, f"{vlow}+({vhigh}-{vlow})*V({s})", nq, com, params, "q")
     if nqb != com:
@@ -314,8 +329,16 @@ def _phasedet(name, n, params):
     parameters, the help is silent): rising edges of a set UP, of b set DN, both reset
     when both are set; output current Iout*(UP-DN) into Q, limited to Vlow..Vhigh."""
     a, b, out, com = n[0], n[1], n[6], n[7]
-    ref = _fnum(params.get("ref", "0"), 0.0)
-    lines, (da, db) = _adc(name, [a, b], com, ref)
+    ref = num(params.get("ref", "0"))
+    # comparators with 1 mV hysteresis, so inputs resting on the threshold don't chatter
+    lines = []
+    latches = []
+    for tag, inp in (("la", a), ("lb", b)):
+        ll, node = _latch(name, tag, f"V({inp},{com})", ref, "1m")
+        lines += ll
+        latches.append(node)
+    adc_lines, (da, db) = _adc(name, latches, "0", 0.5)
+    lines += adc_lines
     zl, zero = _const_zero(name, com)
     lines += zl
     one, up, dn, rst = f"{name}_one", f"{name}_up", f"{name}_dn", f"{name}_rst"
@@ -331,17 +354,29 @@ def _phasedet(name, n, params):
               f".model {name}_dacm dac_bridge(out_low=0 out_high=1 t_rise=1e-9 t_fall=1e-9)"]
     iout = num(params.get("iout", "10u"))
     lines.append(f"B{name} {com} {out} I={iout}*(V({name}_ua)-V({name}_da))")
-    rclamp = num(params.get("rclamp", "1"))
-    vo = f"V({out},{com})"
-    vhigh = f"({num(params.get('vhigh', '1e308'))})"
-    vlow = f"({num(params.get('vlow', '-1e308'))})"
-    lines.append(f"B{name}_clamp {out} {com} I=({vo}>{vhigh} ? ({vo}-{vhigh})/{rclamp} : "
-                 f"({vo}<{vlow} ? ({vo}-{vlow})/{rclamp} : 0))")
+    lines += _smooth_clamp(name, out, com, params)
+    lines.append(f"R{name}_sh {out} {com} 1e12")     # keeps the node defined at DC
     if "rout" in params:
         lines.append(f"R{name}_out {out} {com} {num(params['rout'])}")
     if "cout" in params:
         lines.append(f"C{name}_out {out} {com} {num(params['cout'])}")
     return lines
+
+
+def _smooth_clamp(name, out, com, params, default_high="1e308", default_low="-1e308"):
+    """Voltage compliance Vlow..Vhigh through Rclamp, with a softplus corner of width
+    'epsilon' (default 10 mV) instead of a hard switch, which stalls the time step."""
+    hi = _fnum(params.get("vhigh", default_high), None)
+    lo = _fnum(params.get("vlow", default_low), None)
+    if hi is not None and lo is not None and hi >= 1e300 and lo <= -1e300:
+        return []
+    rc = num(params.get("rclamp", "1"))
+    eps = num(params.get("epsilon", "10m")) if _fnum(params.get("epsilon", "10m"), 0.01) else "10m"
+    vo = f"V({out},{com})"
+    sp = lambda x: f"(({x})>30 ? ({x}) : ln(1+exp({x})))"                      # noqa: E731
+    vh, vl = f"({num(params.get('vhigh', default_high))})", f"({num(params.get('vlow', default_low))})"
+    return [f"B{name}_clamp {out} {com} I=({eps})*({sp(f'({vo}-{vh})/({eps})')}"
+            f"-{sp(f'({vl}-{vo})/({eps})')})/{rc}"]
 
 
 def _varistor(name, n, params):
