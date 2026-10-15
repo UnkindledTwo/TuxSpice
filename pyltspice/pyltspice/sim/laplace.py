@@ -200,10 +200,40 @@ class _Parser:
                 if arg.delay != 0.0 or den != [1.0] or len(num) != 2 or num[0] != 0.0:
                     raise Unsupported("exp() in Laplace= must be a pure delay exp(-T*s)")
                 return RF([1.0], delay=cneg(num[1]))
+            if self.peek() == "(" and tok.lower() == "sqrt":
+                self.take()
+                arg = self.expr()
+                if self.take() != ")":
+                    raise Unsupported("unbalanced parentheses in Laplace expression")
+                return sqrt_ladder(arg)
             if self.peek() == "(":
                 raise Unsupported(f"function {tok}() is not supported in Laplace expressions")
             return RF([f"({tok})"])
         raise Unsupported(f"unexpected '{tok}' in Laplace expression")
+
+
+SQRT_DECADES = 5          # band above the corner covered by the sqrt() approximation
+SQRT_STEP = 10 ** 0.25   # zero/pole spacing: a quarter decade
+
+
+def sqrt_ladder(arg: RF) -> RF:
+    """sqrt(c0 + c1*s) as alternating real zeros and poles (quarter-decade spacing), the
+    usual half-order approximation: +10 dB/decade above the corner, within ~0.1 dB over
+    SQRT_DECADES decades. Only numeric first-order arguments are supported."""
+    num, den = _trim(arg.num), _trim(arg.den)
+    if arg.delay != 0.0 or den != [1.0] or len(num) != 2 \
+            or not all(isinstance(c, float) for c in num) or num[0] <= 0 or num[1] <= 0:
+        raise Unsupported("sqrt() in Laplace= is only supported as sqrt(a + b*s) with positive numbers")
+    c0, c1 = num
+    w = c0 / c1                                    # corner (rad/s)
+    out = RF([c0 ** 0.5])
+    k = 0
+    while k < 4 * SQRT_DECADES:
+        # starting half a step above the corner gives ~0.1 dB error over the band
+        z, p_ = w * SQRT_STEP ** (k + 0.5), w * SQRT_STEP ** (k + 1.5)
+        out = out * RF([1.0, 1.0 / z], [1.0, 1.0 / p_])
+        k += 2
+    return out
 
 
 def parse(expr: str) -> RF:

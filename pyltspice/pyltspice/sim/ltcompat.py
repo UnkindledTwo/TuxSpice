@@ -44,6 +44,8 @@ class Translation:
     warnings: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     steps: list = field(default_factory=list)       # StepSpec (outer loops first)
+    measures: list = field(default_factory=list)    # .meas lines, evaluated in Python
+    params: dict = field(default_factory=dict)      # numeric top-level .param values
     analysis: str = ""                               # tran / ac / dc / op / noise / tf
 
 
@@ -131,7 +133,7 @@ def standard_model(name: str) -> str | None:
     return _standard_cards().get(name.lower())
 
 
-LIB_CACHE_VERSION = "17"     # bump when rewrite_device_line changes
+LIB_CACHE_VERSION = "26"     # bump when rewrite_device_line changes
 
 
 def passed_params(lines) -> dict:
@@ -184,7 +186,7 @@ def ngspice_readable(p: Path, warnings=None, errors=None, passed=None) -> Path:
     utf16 = len(data) > 1 and (data[1] == 0 or data[:2] == b"\xff\xfe")
     defined = {m.lower() for m in re.findall(r"(?im)^\s*\.subckt\s+(\S+)", text)}
     passed = {k: v for k, v in (passed or {}).items() if k in defined}
-    needs = utf16 or "\u00b5" in text or re.search(r"(?im)^\s*a|table\s*\(|^\s*\.model\s+\S+\s+sw|rser|rpar|cpar|lser|noiseless|\w\s+\(|^\s*\.param|;|^\s*k|laplace|wavefile|igbt", text)
+    needs = utf16 or "\u00b5" in text or re.search(r"(?im)^\s*a|table\s*\(|^\s*\.model\s+\S+\s+sw|rser|rpar|cpar|lser|noiseless|\w\s+\(|^\s*\.param|;|^\s*k|laplace|wavefile|igbt|vdmos|vfwd|ron", text)
     if not needs and not passed:
         return p
     cache = config.DATA_DIR / "cache" / "libs"
@@ -201,6 +203,8 @@ def ngspice_readable(p: Path, warnings=None, errors=None, passed=None) -> Path:
                                   errors if errors is not None else [])
         lines += new if new is not None else [line]
     lines = adevices.rewrite_switches(lines)
+    lines = adevices.rewrite_vdmos(lines)
+    lines = adevices.rewrite_ideal_diodes(lines)
     lines = adevices.rewrite_igbts(lines, warnings if warnings is not None else [])
     lines = declare_passed_params(lines, passed)
     out.write_text("\n".join(lines) + "\n", encoding="latin-1", errors="replace")
@@ -401,13 +405,18 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
         if extra:
             return [" ".join(tok[:3] + keep)] + extra
         return None
-    if head == "k" and len(tok) >= 5:
+    if head == "k" and len(tok) >= 4:
         # K1 L1 L2 L3 k -> one coupling statement per pair
         # inductor names as written on the schematic: T2b means element LT2b
         inds = [t if t[:1].lower() == "l" else "L" + t for t in tok[1:-1]]
         kval = tok[-1]
+        kv = spicenum.parse(kval)
+        if kv is not None and abs(kv) >= 1:
+            # LTspice accepts perfect coupling; ngspice's inductance matrix becomes singular
+            kval = "0.9999" if kv > 0 else "-0.9999"
         if len(inds) == 2:
-            return [" ".join([tok[0]] + inds + [kval])] if inds != tok[1:-1] else None
+            changed = inds != tok[1:-1] or kval != tok[-1]
+            return [" ".join([tok[0]] + inds + [kval])] if changed else None
         if len(inds) > 2:
             out = []
             for i in range(len(inds)):
@@ -607,6 +616,8 @@ def translate(text: str, search_dirs=()) -> Translation:
                 if head in (".ac", ".noise"):
                     line = _frequency_list(tok, tr)
                 out.append(line)
+            elif head in (".meas", ".measure") and not in_subckt:
+                tr.measures.append(line)
             elif head == ".step":
                 st = _parse_step(tok[1:])
                 if st is None:
@@ -617,6 +628,13 @@ def translate(text: str, search_dirs=()) -> Translation:
                 kept = [t for t in tok[1:] if t.partition("=")[0].lower() not in DROP_OPTIONS]
                 if kept:
                     out.append(".options " + " ".join(kept))
+            elif head == ".param":
+                if not in_subckt:
+                    for k, v in re.findall(r"(\w+)=(\{[^}]*\}|\S+)", line[6:]):
+                        x = spicenum.parse(v)
+                        if x is not None:
+                            tr.params[k] = x
+                out.append(line)
             elif head == ".model":
                 if len(tok) >= 3:
                     mtype = re.match(r"(?:ako:\S+\s*)?([a-zA-Z]+)", tok[2])
@@ -674,6 +692,8 @@ def translate(text: str, search_dirs=()) -> Translation:
             out[idx] = " ".join(new)
 
     out = adevices.rewrite_switches(out)
+    out = adevices.rewrite_vdmos(out)
+    out = adevices.rewrite_ideal_diodes(out)
     out = adevices.rewrite_igbts(out, tr.warnings)
     out = declare_passed_params(out, passed)
     used = funcs_used("\n".join(out))

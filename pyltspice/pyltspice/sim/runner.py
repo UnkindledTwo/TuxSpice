@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import config
-from . import ltcompat, spicenum
+from . import ltcompat, measure, spicenum
 from .rawfile import Plot, combine_steps, read_raw
 
 SPICEINIT = "set ngbehavior=ltpsa\nset filetype=binary\n"
@@ -192,7 +192,6 @@ class Simulator:
                     res.errors += errs or ["ngspice produced no output"]
                     break
             res.log = "\n".join(logs)
-            res.measurements = parse_measurements(res.log)
             if runs and all(runs) and len(runs) == len(combos):
                 if len(runs) == 1:
                     res.plots = runs[0]
@@ -200,6 +199,9 @@ class Simulator:
                     res.plots = [combine_steps([r[i] for r in runs], labels)
                                  for i in range(min(len(r) for r in runs))]
                 res.ok = True
+                if tr.measures:
+                    parsed = [m for m in (measure.parse(l) for l in tr.measures) if m]
+                    res.measurements = measure.run_measures(parsed, res.plots, tr.params)
                 raw_out = self.out_base.with_suffix(".raw")
                 if len(runs) == 1:
                     raw_out.write_bytes(raw.read_bytes())

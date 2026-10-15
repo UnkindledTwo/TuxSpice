@@ -326,13 +326,15 @@ def _modulator(name, n, params):
 
 def _phasedet(name, n, params):
     """Phase-frequency detector with charge-pump output (behaviour inferred from its
-    parameters, the help is silent): rising edges of a set UP, of b set DN, both reset
-    when both are set; output current Iout*(UP-DN) into Q, limited to Vlow..Vhigh."""
+    parameters, the help is silent): a rising edge on a sets UP, on b sets DN, and both
+    clear when both are set; output current Iout*(UP-DN) into Q, limited to Vlow..Vhigh.
+    Inputs go through 1 mV-hysteresis latches so signals resting on the threshold don't
+    chatter; the flip-flops are XSPICE digital models (edges are never missed).
+    Known issue: inside some PLL feedback loops (examples/Educational/PLL2.asc) ngspice's
+    time step still collapses."""
     a, b, out, com = n[0], n[1], n[6], n[7]
     ref = num(params.get("ref", "0"))
-    # comparators with 1 mV hysteresis, so inputs resting on the threshold don't chatter
-    lines = []
-    latches = []
+    lines, latches = [], []
     for tag, inp in (("la", a), ("lb", b)):
         ll, node = _latch(name, tag, f"V({inp},{com})", ref, "1m")
         lines += ll
@@ -405,6 +407,42 @@ def convert_table(line: str) -> str | None:
     return f"{name} {a} {b} TABLE {{V({c},{d})}} = {pairs}"
 
 
+# ---------------------------------------------------------------- model scoping
+
+def _scopes(lines):
+    """Scope id per line: the index of the enclosing .subckt line, or -1 at top level."""
+    out, stack = [], []
+    for i, line in enumerate(lines):
+        low = line.strip().lower()
+        if low.startswith(".subckt"):
+            stack.append(i)
+            out.append(i)
+        elif low.startswith(".ends"):
+            out.append(stack[-1] if stack else -1)
+            if stack:
+                stack.pop()
+        else:
+            out.append(stack[-1] if stack else -1)
+    return out
+
+
+def scoped_models(lines, pattern):
+    """Model cards matching `pattern` (regex with groups name, rest), resolved the way SPICE
+    does: a model defined inside a .subckt is local to it, others are global.
+    Returns lookup(line_index, model_name) -> match or None."""
+    scopes = _scopes(lines)
+    table = {}
+    for i, line in enumerate(lines):
+        m = re.match(pattern, line, re.I)
+        if m:
+            table[(scopes[i], m.group(1).lower())] = m
+
+    def lookup(i, name):
+        name = name.lower()
+        return table.get((scopes[i], name)) or table.get((-1, name))
+    return lookup
+
+
 # ---------------------------------------------------------------- SW model extensions
 
 _SW_EXT = ("vser", "ilimit", "level", "epsilon")
@@ -423,21 +461,18 @@ def _model_params(body: str):
 def rewrite_switches(lines: list[str]) -> list[str]:
     """Replace S elements whose .model uses LTspice-only SW features (negative Vh =
     smooth transition, Vser, Ilimit) with an equivalent behavioral current source."""
-    models = {}
-    for line in lines:
-        m = re.match(r"(?i)\s*\.model\s+(\S+)\s+sw\b(.*)$", line)
-        if m:
-            p = _model_params(m.group(2))
-            vh = _fnum(p.get("vh", "0"), 0.0)
-            if any(k in p for k in _SW_EXT) or vh < 0 or (p.get("vh", "").startswith("{")):
-                models[m.group(1).lower()] = p
-    if not models:
-        return lines
+    lookup = scoped_models(lines, r"\s*\.model\s+(\S+)\s+sw\b(.*)$")
+
+    def extended(m):
+        p = _model_params(m.group(2))
+        return any(k in p for k in _SW_EXT) or _fnum(p.get("vh", "0"), 0.0) < 0 \
+            or p.get("vh", "").startswith("{")
     out, renamed = [], {}
-    for line in lines:
+    for i, line in enumerate(lines):
         tok = line.split()
-        if tok and tok[0][0] in "sS" and len(tok) >= 6 and tok[5].lower() in models:
-            out += _switch(tok, models[tok[5].lower()])
+        m = lookup(i, tok[5]) if tok and tok[0][0] in "sS" and len(tok) >= 6 else None
+        if m and extended(m):
+            out += _switch(tok, _model_params(m.group(2)))
             renamed[tok[0].lower()] = f"V{tok[0]}_i"
         else:
             out.append(line)
@@ -479,20 +514,16 @@ def rewrite_igbts(lines: list[str], warnings: list) -> list[str]:
     """LTspice's IGBT (Hefner model) has no ngspice equivalent; substitute the classic
     MOSFET-driving-a-wide-base-BJT circuit using the model's threshold, KP, saturation
     current and capacitances (help page 'Z. MESFET and IGBT', defaults from there)."""
-    models = {}
-    for line in lines:
-        m = re.match(r"(?i)\s*\.model\s+(\S+)\s+(nigbt|pigbt)\b(.*)$", line)
-        if m:
-            models[m.group(1).lower()] = (m.group(2).lower(), _model_params(m.group(3) or ""))
-    if not models:
-        return lines
+    pat = r"\s*\.model\s+(\S+)\s+(nigbt|pigbt)\b(.*)$"
+    lookup = scoped_models(lines, pat)
     out = []
-    for line in lines:
+    for i, line in enumerate(lines):
         tok = line.split()
-        if re.match(r"(?i)\s*\.model\s+\S+\s+(nigbt|pigbt)\b", line):
+        if re.match(pat, line, re.I):
             continue
-        if tok and tok[0][0] in "zZ" and len(tok) >= 5 and tok[4].lower() in models:
-            out += _igbt(tok, *models[tok[4].lower()])
+        m = lookup(i, tok[4]) if tok and tok[0][0] in "zZ" and len(tok) >= 5 else None
+        if m:
+            out += _igbt(tok, m.group(2).lower(), _model_params(m.group(3) or ""))
             warnings.append(f"{tok[0]}: IGBT approximated by a MOSFET + bipolar equivalent circuit")
         else:
             out.append(line)
@@ -521,3 +552,83 @@ def _igbt(tok, kind, p):
               f"C{name}_gs {g} {e} {cgs:.6g}",
               f"C{name}_gd {g} {c} {cgd:.6g}"]
     return lines
+
+
+# ---------------------------------------------------------------- VDMOS body node
+
+def rewrite_vdmos(lines: list[str]) -> list[str]:
+    """LTspice accepts 'M d g s b model' for VDMOS and ignores b; ngspice reads extra VDMOS
+    nodes as thermal terminals (tj, tcase), which wires the "body" into the thermal network.
+    Drop the 4th node when the model is a VDMOS."""
+    lookup = scoped_models(lines, r"\s*\.model\s+(\S+)\s+vdmos\b")
+    out = []
+    for i, line in enumerate(lines):
+        m = re.match(r"(?i)(\s*\.model\s+\S+\s+vdmos)\s*\((.*)\)\s*$", line) or \
+            re.match(r"(?i)(\s*\.model\s+\S+\s+vdmos)\b(.*)$", line)
+        if m:
+            # LTspice's VDMOS capacitances default to 0 (help: M. MOSFET); ngspice's don't
+            p = _model_params("(" + m.group(2) + ")")
+            missing = [k for k in ("cgdmax", "cgdmin", "cgs", "cjo") if k not in p]
+            if missing:
+                body = (m.group(2).strip() + " " + " ".join(f"{k}=0" for k in missing)).strip()
+                line = f"{m.group(1)}({body})"
+            out.append(line)
+            continue
+        tok = line.split()
+        if tok and tok[0][0] in "mM" and len(tok) >= 6 and "=" not in tok[4] and lookup(i, tok[5]):
+            line = " ".join(tok[:4] + tok[5:])
+        out.append(line)
+    return out
+
+
+# ---------------------------------------------------------------- LTspice ideal diodes
+
+_IDEAL_KEYS = ("ron", "roff", "vfwd", "vrev", "rrev", "epsilon", "revepsilon", "ilimit", "revilimit")
+
+
+def _quad_knee(x, eps):
+    """0 for x<=0, x^2/(2*eps) for 0<x<eps, x-eps/2 beyond: a C1 knee with no leakage
+    tail below the threshold (an exponential tail swamps uA-level macro-model nodes)."""
+    return f"(({x})<=0 ? 0 : (({x})<{eps} ? ({x})*({x})/(2*{eps}) : ({x})-{eps}/2))"
+
+
+def rewrite_ideal_diodes(lines: list[str]) -> list[str]:
+    """Diode models using LTspice's piecewise-linear 'ideal diode' parameters (Ron, Roff,
+    Vfwd, Vrev, epsilon...) become behavioral current sources with a C1 quadratic knee of
+    width epsilon; ngspice switches sharply between the regions, which stalls the time step
+    in op-amp macro-models (e.g. LTC.lib LT1001 in relax.asc)."""
+    lookup = scoped_models(lines, r"\s*\.model\s+(\S+)\s+d\b(.*)$")
+    out = []
+    for i, line in enumerate(lines):
+        tok = line.split()
+        m = lookup(i, tok[3]) if tok and tok[0][0] in "dD" and len(tok) >= 4 else None
+        p = _model_params(m.group(2)) if m else {}
+        if m and any(k in p for k in _IDEAL_KEYS):
+            out.append(_ideal_diode(tok, p))
+        else:
+            out.append(line)
+    return out
+
+
+def _ideal_diode(tok, p):
+    name, a, k = tok[:3]
+    ron = f"({num(p.get('ron', '1'))})"
+    roff = f"({num(p.get('roff', '1e12'))})"
+    vfwd = f"({num(p.get('vfwd', '0'))})"
+    eps = f"(max({num(p.get('epsilon', '0'))},1m))"
+    v = f"V({a},{k})"
+    fwd = f"{_quad_knee(f'{v}-{vfwd}', eps)}/{ron}"
+    if "ilimit" in p:
+        il = f"({num(p['ilimit'])})"
+        fwd = f"{il}*tanh(({fwd})/{il})"
+    expr = f"{v}/{roff}+{fwd}"
+    if "vrev" in p:
+        vrev = f"({num(p['vrev'])})"
+        rrev = f"({num(p.get('rrev', p.get('ron', '1')))})"
+        reps = f"(max({num(p.get('revepsilon', '0'))},1m))"
+        rev = f"{_quad_knee(f'-{v}-{vrev}', reps)}/{rrev}"
+        if "revilimit" in p:
+            ril = f"({num(p['revilimit'])})"
+            rev = f"{ril}*tanh(({rev})/{ril})"
+        expr += f"-{rev}"
+    return f"B{name} {a} {k} I={expr}"

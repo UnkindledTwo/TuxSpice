@@ -13,8 +13,10 @@ own `LTspice64.msi`, and simulates with ngspice.
   output wouldn't give usable source anyway. Don't copy its bitmaps; icons are drawn in code.
 - **Libraries stay local.** `scripts/extract_msi.py` unpacks the user's installer into
   `~/.local/share/pyltspice/ltspice_lib`. Nothing from it is committed or redistributed.
-- **Encrypted models stay encrypted.** About 3,000 of the ~5,000 files in `lib/sub` are encrypted
-  Analog Devices models. Report them as unsupported and never try to decrypt them.
+- **Encrypted models stay encrypted.** 2,990 of the 5,023 files in `lib/sub` are encrypted
+  Analog Devices models. Report them as unsupported and never try to decrypt them. They back
+  3,300 of 6,566 model-file symbols (nearly all ADC, DAC, switch and power parts; about 20% of
+  op-amps; none in Contrib) and 3,322 of 4,365 examples (3,312 of them in Applications).
 - **Keep files compatible with LTspice.** A schematic saved here must still open in LTspice. The
   test suite round-trips every bundled example to guard this.
 
@@ -51,7 +53,7 @@ Phase 3 (editing):
       Edit Simulation Command, net label, text
 - [x] LTspice default shortcuts (F2–F9, R/C/L/D/G/T/S, Ctrl+R/E, Space)
 
-Tests: 24 passing in about 3 s.
+Tests: 47 passing in about 5 s.
 
 ## Next steps, in priority order
 
@@ -76,17 +78,25 @@ Done:
   orientation fix, Laplace, wavefile and hierarchy fixes (re-measure: `edu_sweep*.txt` in `work/`).
 
 Open:
-- Still failing (11): convergence in relax, Howland, Electrometer (time-step collapses at the first
-  fast edge); HalfSlope (`sqrt()` in Laplace); IGBT (no IGBT model in ngspice); MeasureBW (chained
-  `.meas`); NonLinearTransformer; PLL (`rand()`); PLL2 (PHASEDET); Royer (encrypted model);
-  stepnoise (noise-analysis parameter).
-- Not supported yet: `sqrt()` in Laplace (HalfSlope), PHASEDET/COUNTER A-devices (behaviour
-  undocumented), `.meas` results reused in later `.meas` statements (MeasureBW), IGBT models.
-- Done since: `wavefile=` sources (`sim/wavefile.py`, via XSPICE filesource), Laplace delays.
+- Fixed in the "failing examples" pass:
+  - stepnoise (`.noise ... list`), NonLinearTransformer (Chan hysteretic core, `sim/magnetics.py`,
+    also `Flux=` inductors), PLL (`rand()`/`random()`/`white()`), IGBT (MOSFET+BJT equivalent,
+    with a warning), HalfSlope (`sqrt()` in Laplace via a pole-zero ladder, ~0.1 dB),
+    MeasureBW (`.meas` now evaluated in Python, `sim/measure.py`, chained results work).
+  - relax and Howland: model cards are now scoped per `.subckt` (LTC.lib reuses names
+    like `X` with different parameters), LTspice ideal diodes become smooth B sources, and VDMOS
+    capacitances default to 0 as in LTspice.
+  - Perfect coupling (k = 1) is clamped to 0.9999 for ngspice.
+- Still open:
+  - PLL2: the PHASEDET emulation (XSPICE flip-flops with hysteresis latches) is correct on its
+    own, but ngspice's time step collapses inside this PLL's feedback loop.
+  - Electrometer: works but takes about 5 minutes (1 MHz chopper simulated for 15 ms).
+  - Royer: encrypted ADI model; can't run outside LTspice.
 
 ### 2. UI parity, in progress
 - `docs/ui_spec.md` lists every menu item, shortcut and behaviour with its source (help page or
-  recollection) and status.
+  recollection) and status. Currently 45 done, 10 partial, 12 missing (one of them, Update
+  components, not applicable).
 - Done this round: waveform cursors with readout, `.op` data labels and hover values, Draw >
   Line/Rectangle/Circle/Arc, Zoom Back, Mark Unconnected Pins, the keyboard shortcut editor,
   Tools > Settings (drafting options), View > FFT, File > Export, `.plt` plot settings (auto-loaded
@@ -103,7 +113,7 @@ Open:
 - Efficiency report, PCB netlist export, `.wav` export.
 
 ### 4. Packaging
-- `.desktop` file, icon and MIME types for `.asc`/`.raw`.
+- Done: `.desktop` file, icon and MIME types for `.asc`/`.raw` (`scripts/install_desktop.py`).
 - First-run wizard that finds `LTspice64.msi` and extracts it.
 
 ## How we check it works

@@ -61,3 +61,28 @@ def test_param_normalization_and_table():
     assert ".param X={((p)<=(0) ? (0) : ((p)<=(10) ? (0)+((p)-(0))*((1)-(0))/((10)-(0)) : (1)))}" in out
     assert ".param a={2*b} c=3" in out
     assert ".param Rz={sqrt(4)}" in out
+
+
+def test_laplace_sqrt_approximation():
+    import numpy as np
+    from pyltspice.sim.laplace import parse
+    rf = parse("1/sqrt(1+1u*s)")
+    for w in (1e5, 1e6, 1e7, 1e8, 1e9):
+        s = 1j * w
+        h = np.polyval([complex(c) for c in reversed(rf.num)], s) / \
+            np.polyval([complex(c) for c in reversed(rf.den)], s)
+        assert abs(20 * np.log10(abs(h)) - 20 * np.log10(abs(1 / np.sqrt(1 + 1e-6 * s)))) < 0.2
+
+
+def test_models_are_scoped_to_their_subckt():
+    from pyltspice.sim.adevices import rewrite_ideal_diodes
+    lines = [".subckt A 1 2", "D1 1 2 X", ".model X D(Ron=10 Vfwd=.5)", ".ends A",
+             ".subckt B 1 2", "D1 1 2 X", ".model X D(Ron=99 Vfwd=-2)", ".ends B"]
+    out = rewrite_ideal_diodes(lines)
+    assert "(0.5)" in out[1] and "(10)" in out[1]
+    assert "(-2)" in out[5] and "(99)" in out[5]
+
+
+def test_perfect_coupling_clamped():
+    out = lines("K1 L1 L2 L3 1\nK2 L4 L5 1\n")
+    assert "K1_01 L1 L2 0.9999" in out and "K2 L4 L5 0.9999" in out

@@ -177,3 +177,50 @@ def test_flux_inductor(tmp_path):
 def test_noise_frequency_list():
     from pyltspice.sim.ltcompat import translate
     assert ".noise V(o) V1 lin 1 10K 10K" in translate("* n\n.noise V(o) V1 list 10K\n").text
+
+
+@needs_ngspice
+def test_phasedet_sign(tmp_path):
+    """a faster than b -> UP dominates -> positive output (a PFD is phase-ambiguous at
+    equal frequencies, so test with a frequency difference)."""
+    nl = ("* pd\nA5 a b 0 0 0 0 q 0 PHASEDET Iout=15u Ref=0\nV1 a 0 SIN(0 1 1.3k)\n"
+          "V2 b 0 SIN(0 1 1k)\nC1 q 0 10n\nR1 q 0 100k\n.tran 0 5m 0 2u\n")
+    res = Simulator(nl, tmp_path / "pd").run()
+    assert res.ok, res.errors
+    p = res.main_plot()
+    assert VectorSet(p).get("V(q)")[p.x > 3e-3].mean() > 0.1
+
+
+@needs_ngspice
+def test_measure_chained_and_trig_targ(tmp_path):
+    nl = ("* rc\nV1 in 0 AC 1 PULSE(0 1 0 1n 1n 1 2)\nR1 in out 1k\nC1 out 0 1u\n.ac dec 100 1 100k\n"
+          ".meas AC tmp MAX mag(V(out))\n"
+          ".meas AC BW WHEN mag(V(out))=tmp/sqrt(2)\n"
+          ".meas AC ratio PARAM BW*2\n")
+    res = Simulator(nl, tmp_path / "m").run()
+    assert res.ok, res.errors
+    vals = dict(res.measurements)
+    f3 = 1 / (2 * math.pi * 1e-3)
+    assert abs(float(vals["BW"].split()[0]) - f3) / f3 < 0.01
+    assert abs(float(vals["ratio"].split()[0]) / (2 * float(vals["BW"].split()[0])) - 1) < 1e-5
+    nl2 = ("* rc\nV1 in 0 PULSE(0 1 1m 1n 1n 1 2)\nR1 in out 1k\nC1 out 0 1u\n.tran 0 6m 0 5u\n"
+           ".meas TRAN rise TRIG V(out)=0.1 RISE=1 TARG V(out)=0.9 RISE=1\n"
+           ".meas TRAN vavg AVG V(out) FROM=2m TO=6m\n")
+    res = Simulator(nl2, tmp_path / "m2").run()
+    vals = dict(res.measurements)
+    assert abs(float(vals["rise"].split()[0]) - 1e-3 * math.log(9)) < 2e-5   # 10-90% = tau*ln 9
+    assert 0 < float(vals["vavg"].split()[0]) < 1
+
+
+@needs_lib
+@needs_ngspice
+def test_relaxation_oscillator_swings_rail_to_rail(tmp_path):
+    """examples/Educational/relax.asc (LT1001 macro-model): needs subckt-scoped models,
+    smooth ideal diodes and zero default VDMOS capacitances to oscillate correctly."""
+    from pyltspice import config
+    from pyltspice.model.asc import load_asc
+    p = config.EXAMPLES_DIR / "Educational" / "relax.asc"
+    res = Simulator(generate_netlist(load_asc(p)).text, tmp_path / "relax", [p.parent]).run()
+    assert res.ok, res.errors
+    v = VectorSet(res.main_plot()).get("V(out)")
+    assert v.max() > 13 and v.min() < -13
