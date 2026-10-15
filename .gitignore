@@ -1,0 +1,32 @@
+# User's own LTspice installer and anything extracted from it (never redistribute)
+*.msi
+ltspice_lib/
+
+# Scratch output from batch sims, screenshots
+work/
+
+# Virtualenv
+.venv/
+venv/
+
+# Python build / cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Simulation output written next to schematics
+*.raw
+*.log
+*.ngspice.cir
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
