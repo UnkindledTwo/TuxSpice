@@ -47,6 +47,7 @@ class Translation:
     measures: list = field(default_factory=list)    # .meas lines, evaluated in Python
     params: dict = field(default_factory=dict)      # numeric top-level .param values
     analysis: str = ""                               # tran / ac / dc / op / noise / tf
+    dc_sweep: object = None                          # StepSpec for a .dc dec/oct/list sweep
 
 
 def join_continuations(text: str):
@@ -133,7 +134,7 @@ def standard_model(name: str) -> str | None:
     return _standard_cards().get(name.lower())
 
 
-LIB_CACHE_VERSION = "35"     # bump when rewrite_device_line changes
+LIB_CACHE_VERSION = "58"     # bump when rewrite_device_line changes
 
 
 def passed_params(lines) -> dict:
@@ -146,7 +147,8 @@ def passed_params(lines) -> dict:
         pos = [t for t in tok[1:] if "=" not in t and t.lower() != "params:"]
         names = {t.split("=", 1)[0].lower() for t in tok[1:] if "=" in t}
         if pos and names:
-            out.setdefault(pos[-1].lower(), set()).update(names)
+            # same key as undot_subckt_names gives the renamed .subckt
+            out.setdefault(pos[-1].lower().replace(".", "_"), set()).update(names)
     return out
 
 
@@ -178,16 +180,33 @@ def declare_passed_params(lines, passed: dict):
     return out
 
 
-def ngspice_readable(p: Path, warnings=None, errors=None, passed=None) -> Path:
+def _nested_include(name, parent: Path, warnings, errors, passed, seen) -> str:
+    """'.lib UniversalOpAmp2.lib' inside a library (AD8310.lib): resolve it like the netlist's
+    own .lib lines and include an ngspice-readable copy."""
+    p = resolve_file(name, [Path(parent).parent, config.SUB_DIR])   # parent is the including file
+    if p is None:
+        if errors is not None:
+            errors.append(f"{parent.name}: could not open library file \"{name}\"")
+        return f"* missing include {name}"
+    if scan_definitions(str(p))[2]:
+        if errors is not None:
+            errors.append(f"{p.name} is an encrypted Analog Devices model; it only runs inside LTspice.")
+        return f"* encrypted include {name}"
+    if p.resolve() in seen:
+        return f"* already included {name}"
+    return f'.include "{ngspice_readable(p, warnings, errors, passed, seen | {p.resolve()})}"'
+
+
+def ngspice_readable(p: Path, warnings=None, errors=None, passed=None, _seen=frozenset()) -> Path:
     """Path of a copy of library `p` that ngspice can read: 8-bit text with LTspice-only
     devices (A-devices, table() sources) rewritten. Unchanged files are used in place."""
     data = p.read_bytes()
     text = decode(data)[0]
     utf16 = len(data) > 1 and (data[1] == 0 or data[:2] == b"\xff\xfe")
-    defined = {m.lower() for m in re.findall(r"(?im)^\s*\.subckt\s+(\S+)", text)}
+    defined = {m.lower().replace(".", "_") for m in re.findall(r"(?im)^\s*\.subckt\s+(\S+)", text)}
     passed = {k: v for k, v in (passed or {}).items() if k in defined}
-    needs = utf16 or "\u00b5" in text or re.search(r"(?im)^\s*a|table\s*\(|^\s*\.model\s+\S+\s+sw|rser|rpar|cpar|lser|noiseless|\w\s+\(|^\s*\.param|;|^\s*k|laplace|wavefile|igbt|vdmos|vfwd|ron", text)
-    if not needs and not passed:
+    needs = utf16 or "\u00b5" in text or re.search(r"(?im)^\s*\.(lib|inc)|^\s*a|table\s*\(|^\s*\.model\s+\S+\s+sw|rser|rpar|cpar|lser|noiseless|\w\s+\(|^\s*\.param|;|^\s*k|laplace|wavefile|igbt|vdmos|vfwd|ron", text)
+    if not needs and not passed and text.isascii():
         return p
     cache = config.DATA_DIR / "cache" / "libs"
     cache.mkdir(parents=True, exist_ok=True)
@@ -195,21 +214,44 @@ def ngspice_readable(p: Path, warnings=None, errors=None, passed=None) -> Path:
     key = hashlib.md5(f"{p}|{LIB_CACHE_VERSION}|{sig}".encode()).hexdigest()[:10]
     out = cache / f"{key}_{p.name}"
     if out.exists() and out.stat().st_mtime >= p.stat().st_mtime:
+        # errors found while rewriting are kept in the cached copy; report them every time
+        if errors is not None:
+            for line in out.read_text(encoding="latin-1").splitlines():
+                if line.startswith(_ERROR_MARK):
+                    errors.append(line[len(_ERROR_MARK):])
+                elif not line.startswith("*"):
+                    break
         return out
+    errors = errors if errors is not None else []
+    first_error = len(errors)
     lines = []
     for line in join_continuations(text.replace("\u00b5", "u").replace("\u03bc", "u")):
+        inc = re.match(r"""(?i)\s*\.(?:lib|inc|include)\s+("[^"]+"|\S+)\s*$""", line)
+        if inc:
+            line = _nested_include(inc.group(1).strip('"'), p, warnings, errors, passed, _seen)
+            lines.append(line)
+            continue
         line = fix_expressions(line)
         new = rewrite_device_line(line, warnings if warnings is not None else [],
                                   errors if errors is not None else [])
         lines += new if new is not None else [line]
+    lines = convert_machines(lines)
+    lines = hoist_subckt_params(undot_subckt_names(rename_odd_element_names(lines)))
+    lines = rename_reserved_params(lines)
+    lines = adevices.disambiguate_models(lines)
     lines = rewrite_device_currents(lines)
     lines = adevices.rewrite_switches(lines)
     lines = adevices.rewrite_vdmos(lines)
+    lines = adevices.rewrite_three_terminal_mos(lines)
     lines = adevices.rewrite_ideal_diodes(lines)
     lines = adevices.rewrite_igbts(lines, warnings if warnings is not None else [])
     lines = declare_passed_params(lines, passed)
+    lines = [_ERROR_MARK + e for e in errors[first_error:]] + lines
     out.write_text("\n".join(lines) + "\n", encoding="latin-1", errors="replace")
     return out
+
+
+_ERROR_MARK = "* TUXSPICE-ERROR: "
 
 
 _FUNC_SPACE = re.compile(r"(?i)\b(sqrt|exp|ln|log|log10|abs|min|max|sin|cos|tan|atan|atan2|pow|pwr|"
@@ -230,9 +272,12 @@ def fix_expressions(line: str) -> str:
     if "table(" in line.lower():
         line = expand_table_calls(line)
     if line.lstrip().lower().startswith(".param"):
+        line = _param_commas(line)
         line = normalize_param_line(line)
     if re.search(r"(?i)\btemp(er)?\b", line):
         line = _temp_in_params(line)
+    if line.lstrip()[:1].lower() in "beg" and re.search(r"(?i)\b(cosh|sinh)\s*\(", line):
+        line = re.sub(r"(?i)(?<![\w.])(cosh|sinh)\s*\(", lambda m: f"lt_{m.group(1).lower()}(", line)
     if "smallsig" in line.lower():
         # help (B. Arbitrary Behavioral Source): smallsig() is 1 during .ac/.noise, else 0;
         # translate() defines lt_smallsig for the analysis being run
@@ -295,6 +340,22 @@ def ascii_only(line: str) -> str:
     return "".join(c if c.isascii() else _NON_ASCII.get(c, "_") for c in line)
 
 
+def _param_commas(line: str) -> str:
+    """'.param M=20m, OS=6.3' (ADA4932.lib): LTspice allows commas between assignments.
+    A comma at bracket depth 0 that is followed by 'name=' separates two assignments."""
+    out, depth = [], 0
+    for i, ch in enumerate(line):
+        if ch in "({":
+            depth += 1
+        elif ch in ")}":
+            depth -= 1
+        if ch == "," and depth == 0 and re.match(r"\s*\w+\s*=", line[i + 1:]):
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def strip_inline_comment(line: str) -> str:
     """LTspice treats ';' as the start of a comment anywhere on a line (outside quotes)."""
     if ";" not in line:
@@ -322,6 +383,9 @@ LT_FUNCS = {
             "-floor(abs(sin(floor(x)*12.9898)*43758.5453))}",
     "random": ".func random(x) {rand(x)+(x-floor(x))*(rand(x+1)-rand(x))}",
     "white": ".func white(x) {random(x)-0.5}",
+    # ngspice stops on cosh/sinh overflow; LTspice's models (AD8310) rely on it saturating
+    "lt_cosh": ".func lt_cosh(x) {cosh(min(max(x,-300),300))}",
+    "lt_sinh": ".func lt_sinh(x) {sinh(min(max(x,-300),300))}",
 }
 # functions that need others defined first
 FUNC_DEPS = {"random": {"rand"}, "white": {"random", "rand"}}
@@ -417,6 +481,13 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
         return None
     head = stripped[0].lower()
     tok = _tokenize(stripped)
+    if head == "_":
+        # a non-ASCII first character (ascii_only maps it to '_'), e.g. AD8676.lib's
+        # 'Ö§A3 ... Gm1= Ibias=': an undocumented LTspice-internal device. ('$' lines are
+        # comments, which ngspice handles itself.)
+        errors.append(f"'{tok[0]}' is an undocumented LTspice-only device type; "
+                      "it cannot be simulated outside LTspice")
+        return ["* " + stripped]
     if head in "eg" and re.search(r"(?i)\blaplace\s*=", stripped):
         m = re.match(r"(?i)\s*(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+laplace\s*=\s*(.*)$", stripped)
         if m:
@@ -449,6 +520,8 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
                 return r
         if magnetics.is_core(tok):
             return magnetics.core_elements(tok)
+    if head == "d" and len(tok) >= 4 and re.search(r"(?i)(^|\s)n\s*=", " ".join(tok[4:])):
+        return _series_diodes(tok)
     if head in "rc" and len(tok) >= 4:
         conv = _behavioral_rc(tok)
         if conv:
@@ -497,6 +570,7 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
             return out
         return None
     if head == "r" and len(tok) >= 4:
+        tok = _resistor_tc_list(tok)
         pos, params = _split_params(tok[3:])
         pos = ["noisy=0" if p.lower() == "noiseless" else p for p in pos]
         return [" ".join(tok[:3] + pos + _keep_params(params, "r"))]
@@ -521,7 +595,7 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
     return None
 
 
-_DYNAMIC = re.compile(r"(?i)\b(v|i)\s*\(|\btime\b")
+_DYNAMIC = re.compile(r"(?i)\b(v|i)\s*\(|\btime\b|(?<![\w.])x(?![\w(])")
 
 
 def _behavioral_rc(tok):
@@ -542,9 +616,241 @@ def _behavioral_rc(tok):
     # parameters after the expression (e.g. 'noiseless') don't apply to a B source
     expr = re.sub(r"(?i)\s+(noiseless|tc\d?=\S+)$", "", expr)
     n1, n2 = tok[1], tok[2]
+    # in LTspice's Q= (and R=) expressions, x is the voltage across the element
+    expr = re.sub(r"(?i)(?<![\w.])x(?![\w(])", f"V({n1},{n2})", expr)
     if key == "r":
         return [f"B{tok[0]} {n1} {n2} I=V({n1},{n2})/({expr})"]
     return [f"B{tok[0]} {n1} {n2} I=ddt({expr})"]
+
+
+_RESERVED = {"min", "max", "abs", "sqrt", "exp", "ln", "log", "log10", "sin", "cos", "tan", "asin",
+             "acos", "atan", "sinh", "cosh", "tanh", "pow", "pwr", "sgn", "int", "floor", "ceil",
+             "round", "if", "limit", "table", "uramp", "nint", "atan2", "hypot"}
+
+
+def rename_reserved_params(lines: list[str]) -> list[str]:
+    """A parameter may share its name with a function in LTspice ('.param Min=0.53', then
+    'fCin**Min' in ADA4870.lib); ngspice's numparam reads it as the function. Rename such
+    parameters to '<name>_' wherever they're used as a value (not followed by '(')."""
+    names = set()
+    for l in lines:
+        low = l.lstrip().lower()
+        if low.startswith((".param", ".subckt")) or low[:1] == "x":
+            names |= {m.lower() for m in re.findall(r"(\w+)\s*=", l)}
+    bad = names & _RESERVED
+    if not bad:
+        return lines
+    pat = re.compile(r"(?i)(?<![\w.])(" + "|".join(sorted(bad)) + r")(?![\w.])(?!\s*\()")
+    return [l if l.lstrip().startswith("*") else pat.sub(lambda m: m.group(1) + "_", l) for l in lines]
+
+
+def _lt_bool(expr: str) -> str:
+    """LTspice logic in behavioral expressions: '|' and '&' -> '||' and '&&'."""
+    expr = re.sub(r"(?<![|])\|(?![|])", "||", expr)
+    return re.sub(r"(?<![&])&(?![&])", "&&", expr)
+
+
+def convert_machines(lines: list[str]) -> list[str]:
+    """.machine/.state/.rule/.output/.endmachine (help: '.MACHINE - Arbitrary State Machine').
+
+    ngspice has no discrete states, so each machine is built from XSPICE digital parts: the
+    state *index* (states may share a value, e.g. S0a/S0b in the help's divide-by-2) is held in
+    digital bits that feed back through 1 ns buffers. Each rule's condition becomes a digital
+    signal (> .5, via a B source and an adc_bridge); gate logic picks the first rule that fires
+    ('*' rules first, then in order) and sets the next index, which takes effect 1 ns later, so
+    chained rules execute one at a time ("only one rule executes per timestep").
+    .output lines are current sources into their node; the help reads them through ~1K
+    resistors and the models (LTC6560/6563) feed them to DFLOP clocks, so the current is taken
+    as expression x 1 mA, i.e. the expression's value in volts across 1K."""
+    out, i, k = [], 0, 0
+    while i < len(lines):
+        if not re.match(r"(?i)\s*\.mach(ine)?\b", lines[i]):
+            out.append(lines[i])
+            i += 1
+            continue
+        j = i + 1
+        states, rules, outputs = [], [], []
+        while j < len(lines) and not re.match(r"(?i)\s*\.endmach(ine)?\b", lines[j]):
+            l = lines[j].strip()
+            m = re.match(r"(?i)\.state\s+(\w+)\s+(\S+)", l)
+            if m:
+                states.append((m.group(1).lower(), m.group(2)))
+            m = re.match(r"(?i)\.rule\s+(\S+)\s+(\w+)\s+(.+)$", l)
+            if m:
+                rules.append((m.group(1).lower(), m.group(2).lower(), m.group(3)))
+            m = re.match(r"(?i)\.output\s+\(\s*([^,)\s]+)\s*(?:,\s*([^)\s]+)\s*)?\)\s+(.+)$", l)
+            if m:
+                outputs.append(m.groups())
+            j += 1
+        i = j + 1
+        k += 1
+        out.append(f"* .machine {k} (emulated with XSPICE digital state bits)")
+        out += _machine_parts(f"lt_mach{k}", states, rules, outputs)
+    return out
+
+
+def _machine_parts(tag, states, rules, outputs):
+    index = {n: n_i for n_i, (n, _) in enumerate(states)}
+    nb = max(1, (len(states) - 1).bit_length())
+    lines = []
+    gates = {}                                    # model name -> XSPICE model card
+
+    def gate(kind, ins, out_node, name):
+        model = f"{tag}_{kind}"
+        if kind in ("and", "or") and len(ins) == 1:
+            kind, model = "buf", f"{tag}_buf"
+        if kind == "buf":
+            gates[model] = f".model {model} d_buffer(rise_delay=1e-12 fall_delay=1e-12)"
+            lines.append(f"A{tag}_{name} {ins[0]} {out_node} {model}")
+        elif kind == "inv":
+            gates[model] = f".model {model} d_inverter(rise_delay=1e-12 fall_delay=1e-12)"
+            lines.append(f"A{tag}_{name} {ins[0]} {out_node} {model}")
+        else:
+            gates[model] = f".model {model} d_{kind}(rise_delay=1e-12 fall_delay=1e-12)"
+            lines.append(f"A{tag}_{name} [{' '.join(ins)}] {out_node} {model}")
+
+    # constant 0 / 1 and the current-state bits with their complements
+    lines += [f"A{tag}_z0 [0] [{tag}_zero] {tag}_zm",
+              f".model {tag}_zm adc_bridge(in_low=0.5 in_high=0.5)"]
+    gate("inv", [f"{tag}_zero"], f"{tag}_one", "one")
+    cur = [f"{tag}_q{b}" for b in range(nb)]
+    ncur = [f"{tag}_nq{b}" for b in range(nb)]
+    for b in range(nb):
+        gate("inv", [cur[b]], ncur[b], f"nq{b}")
+
+    def is_state(n_i):
+        return [cur[b] if (n_i >> b) & 1 else ncur[b] for b in range(nb)]
+
+    # analog view of the state, for expressions: index from the bits, value by index
+    lines.append(f"A{tag}_dac [{' '.join(cur)}] [{' '.join(f'{tag}_qa{b}' for b in range(nb))}] {tag}_dacm")
+    lines.append(f".model {tag}_dacm dac_bridge(out_low=0 out_high=1 t_rise=1e-9 t_fall=1e-9)")
+    idx = "(" + "+".join(f"{1 << b}*V({tag}_qa{b})" for b in range(nb)) + ")"
+    lines.append(f"B{tag}_idx {tag}_idx 0 V={idx}")
+    ix = f"floor(V({tag}_idx)+0.5)"
+    value = f"({states[-1][1]})" if states else "0"
+    for n_i in range(len(states) - 2, -1, -1):
+        value = f"({ix}=={n_i} ? ({states[n_i][1]}) : {value})"
+
+    def subst(expr):
+        expr = _lt_bool(expr)
+        expr = re.sub(r"(?i)(?<![\w.])state(?![\w(])", value, expr)
+        for name, v in states:
+            expr = re.sub(rf"(?i)(?<![\w.]){re.escape(name)}(?![\w(])", f"({v})", expr)
+        return expr
+
+    if states:
+        ordered = [r for r in rules if r[0] == "*" and r[1] in index] + \
+                  [r for r in rules if r[0] != "*" and r[1] in index]
+        sel = []                                  # (digital node, new index) per rule, priority order
+        prev_any = None
+        for r_i, (old, new, cond) in enumerate(ordered):
+            ca, cd = f"{tag}_c{r_i}a", f"{tag}_c{r_i}"
+            lines.append(f"B{tag}_c{r_i} {ca} 0 V=(({subst(cond)})>0.5 ? 1 : 0)")
+            lines += [f"A{tag}_c{r_i}adc [{ca}] [{cd}] {tag}_cadc"]
+            fire = f"{tag}_f{r_i}"
+            gate("and", [cd] + (is_state(index[old]) if old != "*" and old in index else []), fire, f"f{r_i}")
+            if prev_any is None:
+                pick = fire
+                any_now = fire
+            else:
+                nprev, pick, any_now = f"{tag}_np{r_i}", f"{tag}_s{r_i}", f"{tag}_any{r_i}"
+                gate("inv", [prev_any], nprev, f"np{r_i}")
+                gate("and", [fire, nprev], pick, f"s{r_i}")
+                gate("or", [prev_any, fire], any_now, f"any{r_i}")
+            sel.append((pick, index[new]))
+            prev_any = any_now
+        lines.append(f".model {tag}_cadc adc_bridge(in_low=0.5 in_high=0.5)")
+        hold = f"{tag}_hold"
+        if prev_any is None:
+            gate("buf", [f"{tag}_one"], hold, "hold")
+        else:
+            gate("inv", [prev_any], hold, "hold")
+        for b in range(nb):
+            terms = [p for p, n_i in sel if (n_i >> b) & 1]
+            keep = f"{tag}_k{b}"
+            gate("and", [hold, cur[b]], keep, f"k{b}")
+            gate("or", terms + [keep], f"{tag}_n{b}", f"n{b}")
+            # memory: an always-enabled latch with a 1 ns data delay, starting at 0 (the first
+            # declared state is the initial one); rules see the state of 1 ns ago
+            lines.append(f"A{tag}_d{b} {tag}_n{b} {tag}_one {tag}_zero {tag}_zero {cur[b]} {tag}_nql{b} {tag}_dly")
+        lines.append(f".model {tag}_dly d_dlatch(data_delay=1e-9 enable_delay=1e-9 set_delay=1e-9 "
+                     "reset_delay=1e-9 ic=0 rise_delay=1e-12 fall_delay=1e-12)")
+    for n, (pos, neg, expr) in enumerate(outputs):
+        lines.append(f"B{tag}_o{n} {neg or 0} {pos} I=1m*({subst(expr)})")
+    return lines + list(gates.values())
+
+
+def hoist_subckt_params(lines: list[str]) -> list[str]:
+    """LTspice evaluates a subckt's .param lines regardless of where they stand (ADA4870.lib
+    defines ORn after the elements using it); ngspice's numparam evaluates in order. Move each
+    subckt's .param lines right after its header, keeping their order (later ones may use
+    earlier ones)."""
+    out, i = [], 0
+    while i < len(lines):
+        l = lines[i]
+        if not l.lstrip().lower().startswith(".subckt"):
+            out.append(l)
+            i += 1
+            continue
+        depth, j, body = 0, i + 1, []
+        while j < len(lines):
+            low = lines[j].lstrip().lower()
+            if low.startswith(".subckt"):
+                depth += 1
+            elif low.startswith(".ends"):
+                if depth == 0:
+                    break
+                depth -= 1
+            body.append(lines[j])
+            j += 1
+        # only top-level params of this subckt (not those of nested subckts)
+        params, rest, d = [], [], 0
+        for b in body:
+            low = b.lstrip().lower()
+            if low.startswith(".subckt"):
+                d += 1
+            elif low.startswith(".ends"):
+                d -= 1
+            (params if d == 0 and low.startswith(".param") else rest).append(b)
+        out += [l] + params + rest
+        i = j
+    return out
+
+
+def undot_subckt_names(lines: list[str]) -> list[str]:
+    """ngspice uses '.' as its hierarchy separator, so a subckt named 'LT1965-x.x' is never
+    found. Dots in subckt names become '_', in .subckt/.ends lines and in X instances alike
+    (both the libraries and the netlist go through this)."""
+    out = []
+    for l in lines:
+        low = l.lstrip().lower()
+        tok = l.split()
+        if low.startswith((".subckt", ".ends")) and len(tok) >= 2 and "." in tok[1]:
+            tok[1] = tok[1].replace(".", "_")
+            l = " ".join(tok)
+        elif tok and tok[0][:1] in "xX" and len(tok) >= 3:
+            k = next((i for i, t in enumerate(tok) if "=" in t or t.lower() == "params:"), len(tok))
+            if k - 1 >= 1 and "." in tok[k - 1] and spicenum.parse(tok[k - 1]) is None:
+                tok[k - 1] = tok[k - 1].replace(".", "_")
+                l = " ".join(tok)
+        out.append(l)
+    return out
+
+
+def rename_odd_element_names(lines: list[str]) -> list[str]:
+    """Element names containing '+' or '-' (AD8475.lib: 'V_Current_Sense+', used by H sources
+    and in I(...)) are legal in LTspice, not in ngspice. Rename them (+ -> P, - -> M) and every
+    reference to them in the same text."""
+    odd = {}
+    for l in lines:
+        t = l.split(None, 1)
+        if t and t[0][:1].isalpha() and re.search(r"[+-]", t[0]) and not l.lstrip().startswith("."):
+            odd[t[0].lower()] = t[0].replace("+", "P").replace("-", "M")
+    if not odd:
+        return lines
+    pat = re.compile(r"(?i)(?<![\w$+-])(" + "|".join(re.escape(k) for k in sorted(odd, key=len, reverse=True))
+                     + r")(?![\w$+-])")
+    return [l if l.lstrip().startswith("*") else pat.sub(lambda m: odd[m.group(1).lower()], l) for l in lines]
 
 
 # terminal (1-based) whose current each LTspice current function reads, per element letter
@@ -615,6 +921,47 @@ def _sense_scope(out, a, b):
         extra.setdefault(i, []).append(f"{vname} {node} {tok[term]} 0")
     for i in sorted(extra, reverse=True):
         out[i] = "\n".join([out[i]] + extra[i])
+
+
+def _series_diodes(tok):
+    """'D1 a k model n=4': help (D. Diode) says instance parameter N is the number of series
+    devices. ngspice has no such parameter, so expand a chain; the first diode keeps the name,
+    so I(D1) is still the chain current."""
+    keep, n = [], None
+    for t in tok[4:]:
+        k, eq, v = t.partition("=")
+        if eq and k.lower() == "n":
+            n = spicenum.parse(v)
+        else:
+            keep.append(t)
+    n = int(round(n)) if n else 1
+    if n <= 1:
+        return [" ".join(tok[:4] + keep)]
+    name, a, k, model = tok[:4]
+    nodes = [a] + [f"{name}_s{i}" for i in range(1, n)] + [k]
+    out = [" ".join([name if i == 0 else f"{name}_{i + 1}", nodes[i], nodes[i + 1], model] + keep)
+           for i in range(n)]
+    # the nodes between the diodes float while they're off (LTspice ideal diodes become B
+    # sources with ~no leakage here): give each a 1G DC path so the matrix stays regular
+    out += [f"R{name}_s{i} {nodes[i]} 0 1G" for i in range(1, n)]
+    return out
+
+
+def _resistor_tc_list(tok):
+    """'R1 a b 500K tc = 0 -.25u 0 30p' (LTC3.lib): LTspice takes a list of temperature
+    coefficients after tc=; ngspice knows tc1 and tc2 only. Higher orders are dropped (they
+    vanish at the nominal 27 C like the others)."""
+    for k, t in enumerate(tok):
+        if t.lower().startswith("tc="):
+            vals = [t.split("=", 1)[1]] if t.split("=", 1)[1] else []
+            j = k + 1
+            while j < len(tok) and spicenum.parse(tok[j].rstrip(",")) is not None and "=" not in tok[j]:
+                vals.append(tok[j].rstrip(","))
+                j += 1
+            vals = [v for x in vals for v in x.split(",") if v]
+            new = [f"tc{n + 1}={v}" for n, v in enumerate(vals[:2])]
+            return tok[:k] + new + tok[j:]
+    return tok
 
 
 def _value(v: str) -> str:
@@ -778,7 +1125,7 @@ def _parse_step(tokens) -> StepSpec | None:
 
 def translate(text: str, search_dirs=()) -> Translation:
     tr = Translation("")
-    lines = join_continuations(text.replace("µ", "u").replace("μ", "u"))
+    lines = convert_machines(join_continuations(text.replace("µ", "u").replace("μ", "u")))
     out = []
     defined_models, defined_subckts = {}, set()
     used_models = {}          # model name -> element letter
@@ -840,6 +1187,17 @@ def translate(text: str, search_dirs=()) -> Translation:
                 out.append(line)
             elif head in (".ac", ".op", ".noise", ".tf", ".dc"):
                 tr.analysis = tr.analysis or head[1:]
+                if head == ".dc" and len(tok) > 1 and tok[1].lower() in ("dec", "oct") or \
+                        head == ".dc" and len(tok) > 3 and tok[2].lower() == "list":
+                    # LTspice: '.dc dec V1 10u 10 10' / '.dc V1 list 1 2 5'; ngspice's .dc is
+                    # linear only. The runner sweeps the source over .op runs instead.
+                    spec = _parse_step(tok[1:])
+                    if spec is None or spec.is_param:
+                        tr.errors.append(f"Unsupported .dc sweep: {line}")
+                    else:
+                        tr.dc_sweep = spec
+                    out.append(".op")
+                    continue
                 if head == ".dc":
                     tok = [t for t in tok if t.lower() != "lin"]
                     line = " ".join(tok)
@@ -870,13 +1228,19 @@ def translate(text: str, search_dirs=()) -> Translation:
                     mtype = re.match(r"(?:ako:\S+\s*)?([a-zA-Z]+)", tok[2])
                     defined_models[tok[1].lower()] = mtype.group(1).lower() if mtype else ""
                 out.append(line)
-            elif head in (".wave", ".net", ".probe", ".loadbias", ".savebias", ".machine", ".endmachine"):
+            elif head == ".fra":
+                tr.errors.append("LTspice's Frequency Response Analysis (.fra with @ probes) "
+                                 "is not supported by TuxSpice")
+            elif head in (".wave", ".net", ".probe", ".loadbias", ".savebias"):
                 tr.warnings.append(f"{head} is not supported by ngspice and was ignored")
             else:
                 out.append(line)
             continue
 
         letter = head[0]
+        if letter == "@":
+            out.append("* " + line)           # FRA probe; .fra reports the error
+            continue
         if letter in "clvraegbki" and (rewritten := rewrite_device_line(
                 line, tr.warnings, tr.errors, search_dirs)) is not None:
             out += rewritten
@@ -894,8 +1258,11 @@ def translate(text: str, search_dirs=()) -> Translation:
                 used_models.setdefault(tok[model_idx].lower(), letter)
                 if letter == "m" and model_idx == nn + 1 and not in_subckt:
                     mos_lines.append((len(out), tok, model_idx))
-            pos, params = _split_params(tok)
-            out.append(" ".join(pos + _keep_params(params, letter)))
+            if letter == "d" and any(t.lower().startswith("n=") for t in tok[4:]):
+                out += _series_diodes(tok)
+            else:
+                pos, params = _split_params(tok)
+                out.append(" ".join(pos + _keep_params(params, letter)))
         else:
             out.append(line)
 
@@ -921,6 +1288,8 @@ def translate(text: str, search_dirs=()) -> Translation:
             new = tok[:4] + [tok[3]] + tok[4:]
             out[idx] = " ".join(new)
 
+    out = rename_reserved_params(undot_subckt_names(rename_odd_element_names(out)))
+    out = adevices.disambiguate_models(out)
     out = rewrite_device_currents(out)
     out = adevices.rewrite_switches(out)
     out = adevices.rewrite_vdmos(out)
@@ -928,8 +1297,19 @@ def translate(text: str, search_dirs=()) -> Translation:
     out = adevices.rewrite_igbts(out, tr.warnings)
     out = declare_passed_params(out, passed)
     used = funcs_used("\n".join(out))
-    for inc in includes:
+    # scan the rewritten copies (and their nested includes): rewrites can introduce helpers
+    pending = re.findall(r'^\.include "([^"]+)"', "\n".join(out), re.M)
+    scanned = set()
+    while pending:
+        inc = pending.pop()
+        if inc in scanned:
+            continue
+        scanned.add(inc)
         used |= _lib_funcs(inc)
+        try:
+            pending += re.findall(r'^\.include "([^"]+)"', Path(inc).read_text(encoding="latin-1"), re.M)
+        except OSError:
+            pass
     for f in list(used):
         used |= FUNC_DEPS.get(f, set())
     func_defs = [LT_FUNCS[f] for f in LT_FUNCS if f in used]     # dict order = dependency order

@@ -31,6 +31,7 @@ class SchematicScene(QGraphicsScene):
         self.conn = None
         self.item_of = {}          # id(model obj) -> item
         self.op_values = {}        # 'v(out)' -> value, from the last .op run
+        self.show_op_flags = True  # View > Show .op Data Flags
         self.rebuild()
 
     @property
@@ -92,7 +93,7 @@ class SchematicScene(QGraphicsScene):
         the named quantity, after an .op run."""
         from ..sim.spicenum import fmt
         expr = d.expr.strip().strip('"')
-        if not self.op_values:
+        if not self.op_values or not self.show_op_flags:
             return None
         if not expr:
             net = self.conn.net_at(d.x, d.y) if self.conn else None
@@ -152,7 +153,13 @@ class SchematicView(QGraphicsView):
         self.setMouseTracking(True)
         self.show_grid = False
         self.mark_unconnected = False
+        self.mark_anchors = False  # View > Mark Anchors (text justification anchor points)
         self.reverse_wheel = False
+        self._scroll = (0, 0)      # Settings > Automatically scroll the view
+        from PySide6.QtCore import QTimer
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(40)
+        self._scroll_timer.timeout.connect(self._auto_scroll)
         self._history = []         # previous view transforms, for Zoom Back
         self._pan_from = None
         self.tool = None           # active editing tool (see tools.py)
@@ -237,9 +244,34 @@ class SchematicView(QGraphicsView):
             self._pan_from = ev.position()
             self.viewport().setCursor(Qt.ClosedHandCursor)
 
+    def _auto_scroll(self):
+        dx, dy = self._scroll
+        if not (dx or dy) or not self.underMouse():
+            self._scroll_timer.stop()
+            return
+        self.pan_by(-dx, -dy)
+        if self.tool:
+            self.tool.mouse = self.mapToScene(self.mapFromGlobal(self.cursor().pos()))
+        self.viewport().update()
+
+    def _check_edge(self, pos):
+        """While a command is active, the view scrolls when the mouse nears an edge."""
+        from .settings_dialog import get
+        busy = self.tool is not None and type(self.tool).__name__ not in ("IdleTool", "ZoomAreaTool")
+        if not busy or not get("drafting/autoscroll"):
+            self._scroll = (0, 0)
+            return
+        r, m, step = self.viewport().rect(), 10, 12
+        dx = -step if pos.x() < m else step if pos.x() > r.width() - m else 0
+        dy = -step if pos.y() < m else step if pos.y() > r.height() - m else 0
+        self._scroll = (dx, dy)
+        if (dx or dy) and not self._scroll_timer.isActive():
+            self._scroll_timer.start()
+
     def mouseMoveEvent(self, ev):
         sp = self.mapToScene(ev.position().toPoint())
         self.mouse_moved.emit(sp.x(), sp.y())
+        self._check_edge(ev.position())
         if self._pan_from is not None:
             d = ev.position() - self._pan_from
             self._pan_from = ev.position()
@@ -277,5 +309,25 @@ class SchematicView(QGraphicsView):
             for x, y in self.scene().conn.unconnected:
                 if (x, y) not in hidden:
                     p.drawRect(QRectF(x - 4, y - 4, 8, 8))
+        if self.mark_anchors:
+            self._paint_anchors(p)
         if self.tool:
             self.tool.paint_overlay(self, p)
+
+    def _paint_anchors(self, p):
+        """Small circles at the justification anchor of every text."""
+        from .items import SymbolItem
+        pen = QPen(theme().color("comment"))
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        r = 3.0
+        pts = []
+        sch = self.scene().sch
+        pts += [(t.x, t.y) for t in sch.texts]
+        pts += [(f.x, f.y) for f in sch.flags if f.name != "0"]
+        for it in self.scene().items():
+            if isinstance(it, SymbolItem):
+                pts += [(x, y) for x, y, _f, _s, _t, kind in it._layout_texts() if kind == "attribute"]
+        for x, y in pts:
+            p.drawEllipse(QPointF(x, y), r, r)

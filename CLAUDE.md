@@ -22,7 +22,8 @@ suite (no PCB) and not a new simulator.
   `lib/cmp`, `examples`, `help`). Env overrides: `PYLTSPICE_DATA`, `PYLTSPICE_LIB`, `PYLTSPICE_NGSPICE`.
 - `model/`: file formats and the data model: `asc.py` (schematic load/save, round-trips byte-for-byte
   modulo normalization), `asy.py` (symbols), `library.py`, `netlist.py` (schematic → SPICE netlist),
-  `edit.py` (edit ops / undo), `geometry.py`, `textio.py` (encoding detection).
+  `edit.py` (edit ops / undo), `geometry.py`, `textio.py` (encoding detection), `pcbnetlist.py`
+  (Tools > Export Netlist).
 - `sim/`: `ltcompat.py` translates LTspice netlist dialect → ngspice (parasitics like Rser/Cpar,
   1-arg `.tran`, `.lib`, default models, dropped options/params, µ suffix). Device emulation lives in
   `adevices.py` (A-devices, switches, ideal diodes, VDMOS, IGBT), `laplace.py`, `magnetics.py`
@@ -30,9 +31,22 @@ suite (no PCB) and not a new simulator.
   binary raw output and implements `.step` itself. `measure.py` evaluates `.meas` in Python after the
   run (ngspice never sees them). `rawfile.py` parses `.raw`; `vectors.py`, `spicenum.py`, `fft.py`,
   `pltfile.py` handle names, numbers, FFT and plot settings.
-- `ui/`: Qt GUI. `main_window.py` is the entry point, plus `schematic_window`/`schematic_view`/`items`/`tools`
+- `ui/`: Qt GUI. `main_window.py` is the entry point; `menus.py` holds LTspice's three menu bars
+  (no window / schematic / waveform) and both right-click menus as data; `settings_dialog.py` is
+  Tools > Settings (ten tabs, `SPEC` lists every key with its default and whether LTspice
+  remembers it, i.e. shows [*]); plus `schematic_window`/`schematic_view`/`items`/`tools`
   (editing), `waveform.py` (pyqtgraph plots), dialogs, `theme.py` (LTspice default colors, saved in QSettings).
-- Entry point: `pyltspice` console script → `pyltspice.app:main` (also `python -m pyltspice`).
+- `mcp/`: MCP server for AI assistants, mirroring LTspice 26.1's `ltspice-mcp-bridge` (tool names,
+  arguments and string-valued JSON replies were captured from the real bridge under Wine). `bridge.py`
+  is the stdio server (`pyltspice-mcp`, `python -m pyltspice.mcp`); it attaches to a running window
+  through `ui/mcp_host.py` (127.0.0.1 + token, registry files from `registry.py`) or runs
+  `headless.py`. `tools.py` has the schemas and the backend-independent logic; `clients.py`
+  writes AI tools' MCP config (Tools > Configure Third-Party AI Assistants, `ui/ai_dialog.py`).
+  Nothing may print to stdout in the bridge (it is the protocol stream). Replies must stay
+  byte-compatible with LTspice's (compact sorted JSON, string scalars, its error texts): after any
+  MCP change run `scripts/mcp_diff.py` against LTspice under Wine (`run lt`, `run tux`, `compare`).
+- Entry points: `pyltspice` → `pyltspice.app:main` (also `python -m pyltspice`); it starts the MCP
+  host unless `PYLTSPICE_NO_MCP` is set. `pyltspice-mcp` → `pyltspice.mcp.bridge:main`.
 
 ## Setup
 
@@ -67,6 +81,10 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
 - GUI tests hang on any modal: right-click in idle mode opens a context menu (`QMenu.exec`), and
   closing a modified schematic asks to save. Leave modes with right-click only while a tool is
   active, and call `doc.undo.setClean()` before `win.close()`.
+- Commands that share a key (A, C, D, P, B, Del, Ctrl+Z... mean different things in schematic
+  and plot windows, as in LTspice) are separate actions with the same key, each enabled only for
+  its window kind (`_act(on=...)`). Never enable both at once, or Qt treats the key as ambiguous.
+  Anything that changes what's enabled must end in `_update_actions()` (plots emit `traces_changed`).
 - Netlist pin order follows `SpiceOrder` after rotation, e.g. an R90 resistor nets as `R1 <right> <left>`.
 - Orientations: `Mn` means rotate by n, *then* mirror x (M90 maps (x, y) → (y, x)). Verified against
   wire ends in `IdealTransformer.asc`; `test_mirrored_rotated_part_connects` guards it.
@@ -79,6 +97,9 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
 - A sim killed by `timeout` can't clean its `/tmp/pyltspice-*` work dir, and long runs write
   gigabytes (a sweep once filled the disk). Use `sweep_examples.py`, which gives each run its own
   TMPDIR, kills the whole process group and deletes it; otherwise clean up after killed runs.
+- MCP tests set `XDG_RUNTIME_DIR` to a temp dir so they never see (or attach to) a real TuxSpice
+  window; GUI-attached tests run the bridge in a thread while the main thread pumps Qt events.
+  Never let tests write a real AI tool config: point `HOME`/`XDG_CONFIG_HOME` at tmp first.
 - Never `pkill -f`/`pgrep -f` with a pattern that also appears in your own command line (it kills the
   shell running it). Use `pgrep -x ngspice`.
 
@@ -105,6 +126,10 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
   removed, so the user's own settings are never touched. TuxSpice can run on the same display and
   be driven with the same XTest input; XFixes gives the cursor image. Results go in `docs/ui_spec.md`.
 - LTspice crashes on exit under Wine (settings aren't saved), and its file dialogs don't open there.
+  Open a schematic by passing it on the command line (`wine LTspice.exe "Z:/path/x.asc"`).
+- Run Xephyr without a compositing window manager (none, or `metacity --no-composite`): with
+  compositing, `xwd -root` shows stale contents. Menus and other popups never appear in
+  `xwd -root`; capture each popup with `xwd -id <id>` (ids from `xwininfo -root -tree`).
 
 ## ngspice quirks handled in `sim/`
 
@@ -132,6 +157,9 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
   stall ngspice's time step. Use tanh/quadratic transitions, ≥1 ns DAC edges, hysteresis latches.
 - XSPICE `s_xfer` takes its DC state from `int_ic` instead of solving it, so Laplace sources are
   built as integrator chains instead (`laplace.to_elements`).
+- ngspice leaves R/C/L currents (`@r1[i]`) at zero in `.ac`. For netlists with `.ac` the runner puts a
+  0 V `v__isense_<dev>` source at each top-level R/C/L's first pin (`runner.add_ac_current_probes`);
+  `rawfile.merge_sense_currents` copies them into `i(@r1[i])` and `vectors.lt_name` hides the helpers.
 - K = 1 (perfect coupling) is clamped to 0.9999; ngspice's inductance matrix is singular otherwise.
 - `G n+ n- nc+ nc- gm vto=<V> dir=1` (undocumented, ~570 uses in LTC.lib/ADI macro-models) is a
   one-sided clamp: a B source gm*knee(V(nc)-vto) (`ltcompat._threshold_vccs`).

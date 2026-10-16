@@ -389,3 +389,31 @@ def write_netlist(sch: Schematic, out: Path | None = None, lib=None) -> Path:
     out = Path(out or Path(sch.path).with_suffix(".net"))
     out.write_text(nl.text, encoding="latin-1", errors="replace")
     return out
+
+
+def subckt_netlist(sch: Schematic, lib: SymbolLibrary | None = None, name="sheet") -> tuple[str, list]:
+    """Hierarchy > Generate Subckt Netlist: this sheet as '.subckt name <I/O ports>'.
+    Analysis commands are left out; other directives stay inside the subcircuit."""
+    lib = lib or default_library()
+    local = [sch.path.parent] if sch.path else []
+    conn = connectivity(sch, lib)
+    ports, seen = [], set()
+    for f in sch.flags:
+        if f.iopin and f.name.lower() not in seen:
+            seen.add(f.name.lower())
+            ports.append(conn.net_of_point.get((f.x, f.y), f.name))
+    includes, errors, subckts = [], [], {}
+    body = _body_lines(sch, lib, local, conn, includes, errors, subckts, frozenset())
+    for t in sch.texts:
+        if t.is_directive:
+            body += [l for l in t.text[1:].split("\\n")
+                     if not l.strip().lower().startswith(ANALYSES + (".backanno", ".end"))]
+    lines = [f"* {sch.path}" if sch.path else "* untitled", f".subckt {name} {' '.join(ports)}".rstrip()]
+    lines += body
+    for sub in subckts.values():
+        if sub:
+            lines += sub
+    for inc in includes:
+        lines.append(f".lib {inc}")
+    lines.append(f".ends {name}")
+    return "\n".join(lines) + "\n", errors

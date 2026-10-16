@@ -14,6 +14,7 @@ test = ["pytest"]
 
 [project.scripts]
 pyltspice = "pyltspice.app:main"
+pyltspice-mcp = "pyltspice.mcp.bridge:main"
 
 [tool.setuptools.packages.find]
 include = ["pyltspice*"]

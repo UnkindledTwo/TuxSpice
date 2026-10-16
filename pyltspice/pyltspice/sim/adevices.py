@@ -604,6 +604,63 @@ def rewrite_vdmos(lines: list[str]) -> list[str]:
     return out
 
 
+_FAMILY = {"m": ("nmos", "pmos", "vdmos"), "q": ("npn", "pnp", "lpnp"), "d": ("d",),
+           "j": ("njf", "pjf"), "s": ("sw",), "w": ("csw",), "z": ("nmf", "pmf")}
+
+
+def disambiguate_models(lines: list[str]) -> list[str]:
+    """LTspice picks a model by name *and* device letter, so LTC.lib's LT1206 can define both
+    '.model N NPN(...)' and '.model N VDMOS(...)' in one subckt. ngspice has one namespace per
+    scope and would hand the NPN model to the MOSFET. Where a scope defines a name with several
+    types, each becomes '<name>_<type>' and devices use the variant matching their letter."""
+    scopes = _scopes(lines)
+    defs = {}
+    for i, line in enumerate(lines):
+        m = re.match(r"(?i)\s*\.model\s+(\S+)\s+(?:ako:\s*\S+\s+)?([a-z]+)", line)
+        if m:
+            defs.setdefault((scopes[i], m.group(1).lower()), {})[m.group(2).lower()] = i
+    clashes = {k: v for k, v in defs.items() if len(v) > 1}
+    if not clashes:
+        return lines
+    out = list(lines)
+    for (scope, name), types in clashes.items():
+        for mtype, i in types.items():
+            out[i] = re.sub(r"(?i)^(\s*\.model\s+)(\S+)", lambda m: f"{m.group(1)}{m.group(2)}_{mtype}",
+                            out[i], count=1)
+    for i, line in enumerate(out):
+        tok = line.split()
+        if not tok or tok[0][0].lower() not in _FAMILY:
+            continue
+        fam = _FAMILY[tok[0][0].lower()]
+        start = 3 if tok[0][0].lower() == "d" else 4
+        for j in range(start, len(tok)):
+            t = tok[j]
+            if "=" in t:
+                break
+            types = clashes.get((scopes[i], t.lower())) or clashes.get((-1, t.lower()))
+            if types:
+                pick = next((ty for ty in fam if ty in types), None)
+                if pick:
+                    tok[j] = f"{t}_{pick}"
+                    out[i] = " ".join(tok)
+                break
+    return out
+
+
+def rewrite_three_terminal_mos(lines: list[str]) -> list[str]:
+    """'M d g s model' with an NMOS/PMOS model: LTspice ties the body to the source; ngspice
+    needs four nodes ("not enough nodes"). Uses the model in scope (LTC.lib defines 'N' as
+    NMOS in some subckts and VDMOS in others; VDMOS keeps three nodes)."""
+    lookup = scoped_models(lines, r"\s*\.model\s+(\S+)\s+([np]mos)\b")
+    out = []
+    for i, line in enumerate(lines):
+        tok = line.split()
+        if tok and tok[0][0] in "mM" and len(tok) >= 5 and "=" not in tok[4] and lookup(i, tok[4]):
+            line = " ".join(tok[:4] + [tok[3]] + tok[4:])
+        out.append(line)
+    return out
+
+
 # ---------------------------------------------------------------- LTspice ideal diodes
 
 _IDEAL_KEYS = ("ron", "roff", "vfwd", "vrev", "rrev", "epsilon", "revepsilon", "ilimit", "revilimit")

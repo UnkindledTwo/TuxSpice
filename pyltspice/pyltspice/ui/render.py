@@ -16,6 +16,22 @@ _family = None
 _DASH = {1: Qt.DashLine, 2: Qt.DotLine, 3: Qt.DashDotLine, 4: Qt.DashDotDotLine}
 
 
+_bold = True
+_size_scale = 1.0           # Settings > Schematic > Font Properties > Size, relative to LTspice's 28
+_pen_px = 1.0               # Settings > Schematic > Pen thickness
+
+
+def set_font_settings(family="Tahoma", bold=True, size=28, pen=1):
+    """Apply Settings > Schematic: font family/size/bold and pen thickness."""
+    global _family, _bold, _size_scale, _pen_px
+    from PySide6.QtGui import QFontDatabase
+    have = set(QFontDatabase.families())
+    _family = family if family in have else next((f for f in FONT_FAMILIES if f in have), FONT_FAMILIES[0])
+    _bold = bold
+    _size_scale = max(size, 1) / 28
+    _pen_px = max(1, pen)
+
+
 def _font_family():
     global _family
     if _family is None:
@@ -28,16 +44,16 @@ def _font_family():
 def font_for(size: int) -> QFont:
     family = _font_family()
     f = QFont(family)
-    f.setBold(True)
-    if family != "Tahoma":
+    f.setBold(_bold)
+    if family != "Tahoma" and family in FONT_FAMILIES:
         f.setStretch(90)
-    f.setPixelSize(max(1, round(BASE_FONT_PX * FONT_SCALE.get(size, 1.5))))
+    f.setPixelSize(max(1, round(BASE_FONT_PX * _size_scale * FONT_SCALE.get(size, 1.5))))
     return f
 
 
 def make_pen(color, width=0.0, style=0) -> QPen:
     pen = QPen(color)
-    pen.setWidthF(width)
+    pen.setWidthF(width or (_pen_px if _pen_px > 1 else 0.0))
     pen.setCosmetic(width == 0.0)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)

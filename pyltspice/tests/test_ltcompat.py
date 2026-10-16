@@ -97,3 +97,25 @@ def test_model_params_with_commas():
     from pyltspice.sim.adevices import _model_params
     p = _model_params("D(Ron=1k, Roff=1T  Vfwd=1 ilimit=332u noiseless)")
     assert p == {"ron": "1k", "roff": "1T", "vfwd": "1", "ilimit": "332u"}
+
+
+def test_ltspice_expression_and_device_quirks():
+    """Rewrites found in the Applications examples sweep."""
+    t = translate("* t\n.temp 85\n.param Isc={1m*(1+1m*(temp-27))}\n"
+                  "B1 0 o I=2m*smallsig() NoJacob\n"
+                  "G1 a b c d 100m vto=670m dir=1\n"
+                  "I1 vcc 0 1m load\n"
+                  "R2 a b R=1k*V(c,0)\n"
+                  "D1 a b 1N4148 n=3\n"
+                  "M3 d g 0 0 nm\nB2 0 p I=Id(M3)\n.model nm nmos(vto=1)\n"
+                  "M§Q6 d g 0 0 nm\n"
+                  ".param A2 = Table({Gain}, 8, 0, 16, {Vdd})\n.op\n").text
+    assert ".param lt_temp=85" in t and "{1m*(1+1m*(lt_temp-27))}" in t
+    assert "I=2m*{lt_smallsig}" in t and "nojacob" not in t.lower()
+    assert "BG1 a b I=(100m)*" in t and "V(c,d)-(670m)" in t
+    assert "BI1 vcc 0 I=(0.001)*tanh(V(vcc,0)/0.25)" in t
+    assert "BR2 a b I=V(a,b)/(1k*V(c,0))" in t
+    assert "D1 a D1_s1 1n4148" in t.replace("1N4148", "1n4148") and "D1_3 D1_s2 b" in t
+    assert "I(V__s_M3_1)" in t and "V__s_M3_1 d d__s__M3_1 0" in t
+    assert "MSQ6" in t and t.isascii()
+    assert "{(((Gain))<=(8)" in t                      # nested braces flattened

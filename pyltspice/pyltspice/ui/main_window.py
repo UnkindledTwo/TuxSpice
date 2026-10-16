@@ -25,7 +25,7 @@ from .document import SchematicDocument
 from .schematic_window import SchematicWindow
 from .waveform import WaveformViewer
 
-APP_NAME = "pyltspice"
+APP_NAME = "TuxSpice"
 ANALYSES = (".tran", ".ac", ".dc", ".op", ".noise", ".tf", ".pz", ".disto")
 
 
@@ -57,7 +57,18 @@ class PlotWindow(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(viewer)
+        self.raw_path = None
         self.setAttribute(Qt.WA_DeleteOnClose)
+
+    def closeEvent(self, ev):
+        """Settings > Operation > Automatically delete .raw files."""
+        from .settings_dialog import get
+        if self.raw_path is not None and get("operation/delete_raw"):
+            try:
+                Path(self.raw_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        super().closeEvent(ev)
 
     @property
     def title(self):
@@ -90,8 +101,18 @@ class ScopeMdiArea(QMdiArea):
     def paintEvent(self, ev):
         from PySide6.QtGui import QLinearGradient, QPainterPath, QPen, QColor
         import math
+        from .settings_dialog import get
         p = QPainter(self.viewport())
         r = self.viewport().rect()
+        bg = get("operation/background")
+        if bg == "None":
+            p.fillRect(r, QColor("#808080"))
+            return
+        if bg.startswith("User"):
+            img = QImage(str(config.user_background()))
+            if not img.isNull():
+                p.drawImage(r, img)
+                return
         g = QLinearGradient(0, 0, r.width(), r.height())
         g.setColorAt(0, QColor("#030a10"))
         g.setColorAt(1, QColor("#0b2734"))
@@ -141,7 +162,14 @@ class MainWindow(QMainWindow):
         self.sim_thread = None
         self.sim_owner = None
         self.untitled = 0
+        self.floating = []             # windows popped out with Float Window
+        self.line_style = 0            # Edit > Draw > Line Style for new graphics
         self.actions = {}
+        from . import render
+        from .settings_dialog import get
+        render.set_font_settings(get("drafting/font"), get("drafting/font_bold"), get("drafting/font_size"),
+                                 get("drafting/pen_thickness"))
+        self._apply_search_paths()
         self._build_actions()
         shortcuts.apply_saved(self.actions)
         self._build_menus()
@@ -164,215 +192,358 @@ class MainWindow(QMainWindow):
         return v in (True, "true", "1", 1)
 
     # ------------------------------------------------------------ actions
-    def _act(self, key, text, slot, shortcut=None, icon=None, checkable=False, tip=None):
+    def _act(self, key, text, slot, shortcut=None, icon=None, checkable=False, tip=None, on="any"):
+        """on: where the command is enabled: 'any', 'doc' (some window), 'sch' (schematic active),
+        'plot' (waveform active), 'never' (not implemented in TuxSpice). Commands that share a key
+        (A is Configure Analysis in a schematic, Add Trace in a plot, as in LTspice) are never
+        enabled together, so the key is never ambiguous."""
         a = QAction(text, self)
         seqs = (shortcut if isinstance(shortcut, (list, tuple)) else [shortcut]) if shortcut else []
         a.default_keys = [QKeySequence(s).toString() for s in seqs]
         if seqs:
             a.setShortcuts([QKeySequence(s) for s in seqs])
         a.setShortcutContext(Qt.WindowShortcut)
-        if icon:
+        if icon and icon in icons.ICONS:
             a.setIcon(icons.icon(icon))
         a.setCheckable(checkable)
-        a.setToolTip(tip or text.replace("&", ""))
-        a.triggered.connect(slot)
+        a.setToolTip(tip or text.split("\t")[0].replace("&", ""))
+        if on == "never":
+            a.setStatusTip(tip or "Not implemented in TuxSpice yet")
+        if slot is not None:
+            a.triggered.connect(slot)
+        a.on = on
+        self.actions[key] = a
+        return a
+
+    def _alias(self, key, target, text):
+        """A right-click menu entry worded differently from the menu bar's (no own shortcut)."""
+        t = self.actions[target]
+        keys = t.shortcuts()
+        a = QAction(text + (f"\t{keys[0].toString()}" if keys else ""), self)
+        a.setIcon(t.icon())
+        a.triggered.connect(t.trigger)
+        a.on = t.on
+        a.alias_of = target
         self.actions[key] = a
         return a
 
     def _build_actions(self):
-        # Texts, icons and default keys follow LTspice 26's menus and its "new" default shortcuts
-        # (observed under Wine). F-key aliases from LTspice XVII are kept as secondary keys.
+        # Texts, icons, default keys and grouping follow LTspice 26's menus and its "new" default
+        # shortcuts (observed under Wine). F-key aliases from LTspice XVII are kept as secondary keys.
         A = self._act
         sw = self.schematic
         pv = self._plot_viewer
         # File
         A("file_new", "&New Schematic", self.new_schematic, "Ctrl+N", "new", tip="Start drafting a new schematic")
+        A("file_new_symbol", "New Symbol", None, None, "new_symbol", on="never",
+          tip="The symbol editor is not implemented in TuxSpice yet")
+        A("file_new_lib_inductor", "Inductor", None, None, on="never",
+          tip="Inductor libraries are not implemented in TuxSpice yet")
         A("file_open", "&Open...", self.open_dialog, "Ctrl+O", "open", tip="Open an existing document")
         A("file_examples", "Open E&xamples...", self.open_examples, None, "examples")
-        A("file_close", "&Close", self.close_active, "Ctrl+W", "close")
-        A("file_save", "&Save", self.save, "Ctrl+S", "save", tip="Save the active document")
-        A("file_save_as", "Save &As...", self.save_as, "Ctrl+Shift+S", "save_as")
+        A("file_close", "&Close", self.close_active, "Ctrl+W", "close", on="doc")
+        A("file_save", "&Save", self.save, "Ctrl+S", "save", tip="Save the active document", on="sch")
+        A("file_save_as", "Save &As...", self.save_as, "Ctrl+Shift+S", "save_as", on="sch")
         A("file_save_all", "Save A&ll", self.save_all)
-        A("file_print", "&Print...", self.print_active, "Ctrl+P", "print", tip="Print the active document")
-        A("file_export", "Export as Image...", self.export_image)
-        A("file_export_data", "Export data as text", self.export_waveform_data, None, "netlist")
-        A("plot_save", "Save Plot Settings", lambda: self.save_plot_settings(), None, "save")
+        A("file_print", "&Print...", self.print_active, "Ctrl+P", "print", tip="Print the active document", on="doc")
+        A("file_print_preview", "Print Pre&view", self.print_preview, None, "print_preview", on="doc")
+        A("file_print_setup", "Print Se&tup...", self.print_setup, None, "print_setup")
+        A("file_print_mono", "Print &Monochrome", self._set_print_mono, checkable=True)
+        self.actions["file_print_mono"].setChecked(self.settings_bool("print/monochrome", True))
+        A("file_export", "Export as Image...", self.export_image, on="sch")
+        A("file_export_data", "&Export data as text", self.export_waveform_data, None, "export", on="plot")
+        A("file_exec_meas", "Execute .MEAS Script", self.execute_meas_script, None, "meas", on="plot")
+        A("file_fast_access", "Convert to Fast Access", None, None, "fast_access", on="never",
+          tip="TuxSpice has no Fast Access file format")
         A("file_exit", "E&xit", self.close)
         # Edit (LTspice 26 default keys)
-        A("edit_undo", "&Undo", lambda: self._undo(True), ["Ctrl+Z", "F9"], "undo", tip="Undo last edit.")
+        A("edit_undo", "Und&o", lambda: self._undo(True), ["Ctrl+Z", "F9"], "undo", tip="Undo last edit.", on="sch")
         A("edit_redo", "&Redo", lambda: self._undo(False), ["Ctrl+Shift+Z", "Shift+F9", "Ctrl+Y"], "redo",
-          tip="Re-do last undo.")
-        A("edit_text", "&Text", lambda: sw() and sw().place_text(False), "T", "text", tip="Annotate with text.")
+          tip="Re-do last undo.", on="sch")
+        A("edit_text", "&Text", lambda: sw() and sw().place_text(False), "T", "text", tip="Annotate with text.",
+          on="sch")
         A("edit_directive", "&SPICE Directive", lambda: sw() and sw().place_text(True), ".", "directive",
-          tip="Place a SPICE directive on the schematic")
+          tip="Place a SPICE directive on the schematic", on="sch")
         A("sim_edit_cmd", "Configure SPICE &Analysis", self.edit_sim_command, "A", "analysis",
-          tip="Enter or Edit the SPICE analysis command")
-        A("edit_resistor", "&Resistor", lambda: sw() and sw().place_symbol("res"), "R", "resistor",
-          tip="Place a new Resistor on the schematic.")
-        A("edit_capacitor", "&Capacitor", lambda: sw() and sw().place_symbol("cap"), "C", "capacitor",
-          tip="Place a new Capacitor on the schematic.")
-        A("edit_inductor", "&Inductor", lambda: sw() and sw().place_symbol("ind"), "L", "inductor",
-          tip="Place a new Inductor on the schematic.")
-        A("edit_diode", "&Diode", lambda: sw() and sw().place_symbol("diode"), "D", "diode",
-          tip="Place a new Diode on the schematic.")
+          tip="Enter or Edit the SPICE analysis command", on="sch")
+        A("edit_resistor", "Resistor", lambda: sw() and sw().place_symbol("res"), "R", "resistor",
+          tip="Place a new Resistor on the schematic.", on="sch")
+        A("edit_capacitor", "Capacitor", lambda: sw() and sw().place_symbol("cap"), "C", "capacitor",
+          tip="Place a new Capacitor on the schematic.", on="sch")
+        A("edit_inductor", "Inductor", lambda: sw() and sw().place_symbol("ind"), "L", "inductor",
+          tip="Place a new Inductor on the schematic.", on="sch")
+        A("edit_diode", "Diode", lambda: sw() and sw().place_symbol("diode"), "D", "diode",
+          tip="Place a new Diode on the schematic.", on="sch")
         A("edit_voltage", "&Voltage Source", lambda: sw() and sw().place_symbol("voltage"), "V", "voltage",
-          tip="Place a voltage source on the schematic.")
-        A("edit_component", "Com&ponent", self.pick_component, ["P", "F2"], "component",
-          tip="Place a new component on the schematic.")
-        A("edit_rotate", "R&otate", lambda: sw() and sw().rotate_or_mirror(False), "Ctrl+R", "rotate",
-          tip="Rotate the selected items.")
+          tip="Place a voltage source on the schematic.", on="sch")
+        A("edit_current", "C&urrent Source", lambda: sw() and sw().place_symbol("current"), "I", "current",
+          tip="Place a current source on the schematic.", on="sch")
+        A("edit_component", "&Component", self.pick_component, ["P", "F2"], "component",
+          tip="Place a new component on the schematic.", on="sch")
+        A("edit_rotate", "&Rotate", lambda: sw() and sw().rotate_or_mirror(False), "Ctrl+R", "rotate",
+          tip="Rotate the selected items.", on="sch")
         A("edit_mirror", "&Mirror", lambda: sw() and sw().rotate_or_mirror(True), "Ctrl+E", "mirror",
-          tip="Mirror the selected items.")
-        A("edit_wire", "Draw &Wire", lambda: sw() and sw().start_wire(), ["W", "F3"], "wire", tip="Draft wires.")
-        A("edit_label", "Label &Net", lambda: sw() and sw().place_label(), ["N", "F4"], "label", tip="Label a node.")
+          tip="Mirror the selected items.", on="sch")
+        A("edit_wire", "Draw &Wire", lambda: sw() and sw().start_wire(), ["W", "F3"], "wire", tip="Draft wires.",
+          on="sch")
+        A("edit_label", "Label &Net", lambda: sw() and sw().place_label(), ["N", "F4"], "label", tip="Label a node.",
+          on="sch")
         A("edit_ground", "Place &GND", lambda: sw() and sw().place_ground(), "G", "ground",
-          tip="Place a GND symbol on the schematic.")
-        A("edit_delete", "D&elete", lambda: sw() and sw().start_delete(), ["Backspace", "Del", "F5"], "delete",
-          tip="Delete Mode")
+          tip="Place a GND symbol on the schematic.", on="sch")
+        A("edit_bustap", "Place &BUS tap", None, "B", "bustap", on="never",
+          tip="Buses are not implemented in TuxSpice yet")
+        A("edit_delete", "&Delete\tBackspace or Del", lambda: sw() and sw().start_delete(), ["Backspace", "Del", "F5"], "delete",
+          tip="Delete Mode", on="sch")
         A("edit_duplicate", "D&uplicate", lambda: sw() and sw().start_move("duplicate"), ["Ctrl+C", "F6"],
-          "duplicate", tip="Duplicate Mode")
-        A("edit_move", "&Move", lambda: sw() and sw().start_move("move"), ["M", "F7"], "move", tip="Move a section.")
-        A("edit_drag", "S&tretch", lambda: sw() and sw().start_move("drag"), ["S", "F8"], "drag",
-          tip="Stretch a section.")
-        for kind, label, ic in (("LINE", "&Line", "line"), ("RECTANGLE", "&Rectangle", "rectangle"),
-                                ("CIRCLE", "&Ellipse", "ellipse"), ("ARC", "&Arc", "arc")):
-            A(f"draw_{kind.lower()}", label, lambda _=False, k=kind: sw() and sw().start_draw(k), None, ic)
-        A("edit_dataflag", "Place .op Data Label", lambda: sw() and sw().place_data_flag())
-        A("edit_find", "Search", self.find_text, "Ctrl+F", "find", tip="Search for text string in deck")
+          "duplicate", tip="Duplicate Mode", on="sch")
+        A("edit_move", "&Move", lambda: sw() and sw().start_move("move"), ["M", "F7"], "move",
+          tip="Move a section.", on="sch")
+        A("edit_drag", "&Stretch", lambda: sw() and sw().start_move("drag"), ["S", "F8"], "drag",
+          tip="Stretch a section.", on="sch")
+        A("edit_paste", "&Paste", None, "Ctrl+V", "paste", on="never",
+          tip="Pasting between schematics is not implemented in TuxSpice yet")
+        for kind, label, ic in (("LINE", "Line", "line"), ("RECTANGLE", "Rectangle", "rectangle"),
+                                ("CIRCLE", "Ellipse", "ellipse"), ("ARC", "Arc", "arc")):
+            A(f"draw_{kind.lower()}", label, lambda _=False, k=kind: sw() and sw().start_draw(k), None, ic, on="sch")
+        from PySide6.QtGui import QActionGroup
+        grp = QActionGroup(self)
+        for i, name in enumerate(("Solid", "Dash", "Dot", "Dash Dot", "Dash Dot Dot")):
+            a = A(f"style_{i}", name, lambda _=False, i=i: self._set_line_style(i), checkable=True)
+            grp.addAction(a)
+        self.actions["style_0"].setChecked(True)
+        A("edit_dataflag", ".op Data Label", lambda: sw() and sw().place_data_flag(), None, "dataflag", on="sch")
+        A("edit_find", "Search", self.find_text, "Ctrl+F", "find", tip="Search for text string in deck", on="sch")
         # Hierarchy
-        A("hier_symbol", "Open or Generate this Sheet's &Symbol", self.open_sheet_symbol, None, "component")
+        A("hier_symbol", "Open or Generate this Sheet's &Symbol", self.open_sheet_symbol, None, "component",
+          on="sch")
+        A("hier_new_symbol", "Create a &New Blank Symbol", None, None, "new_symbol", on="never",
+          tip="The symbol editor is not implemented in TuxSpice yet")
+        A("hier_new_sheet", "Create a New Blank S&heet", self.new_schematic, None, "blank_sheet", on="sch")
+        A("hier_subckt", "Generate Sub&ckt Netlist", self.generate_subckt, None, "netlist", on="sch")
         # View
-        A("view_zoom_area", "Zoom &Area", self._zoom_area, "Z", "zoom_in", tip="Drag a box and zoom in")
+        A("view_zoom_area", "Zoom &Area", self._zoom_area, "Z", "zoom_in", tip="Drag a box and zoom in", on="doc")
         A("view_zoom_back", "Zoom &Back", self._zoom_back, ["Shift+Z", "Ctrl+B"], "zoom_out",
-          tip="Zoom back two fold")
-        A("view_fit", "Zoom to &Fit", self.zoom_fit, "Space", "zoom_fit", tip="Zoom the full extent is visible")
-        A("view_zoom_in", "Zoom &In", lambda: self._zoom(1.5), "Ctrl+=")
-        A("view_zoom_out", "Zoom &Out", lambda: self._zoom(1 / 1.5), "Ctrl+-")
-        A("view_grid", "Show &Grid", self.toggle_grid, "Ctrl+G", checkable=True)
-        A("view_unconnected", "Mark &Unconn. Pins", self.toggle_unconnected, "Ctrl+U", checkable=True)
+          tip="Zoom back two fold", on="doc")
+        A("view_fit", "Zoom to &Fit", self.zoom_fit, "Space", "zoom_fit", tip="Zoom the full extent is visible",
+          on="doc")
+        A("view_zoom_in", "Zoom &In", lambda: self._zoom(1.5), "Ctrl+=", on="sch")
+        A("view_zoom_out", "Zoom &Out", lambda: self._zoom(1 / 1.5), "Ctrl+-", on="sch")
+        A("view_recenter", "Recenter", self.recenter, None, "recenter", on="doc")
+        A("view_grid", "Show Grid", self.toggle_grid, "Ctrl+G", "check", checkable=True, on="sch")
+        A("view_unconnected", "Mark Unconn. Pins", self.toggle_unconnected, "Ctrl+U", "check", checkable=True,
+          on="sch")
+        A("view_anchors", "Mark Anchors", self.toggle_anchors, "Ctrl+A", "check", checkable=True, on="sch")
         from .settings_dialog import get
         self.actions["view_unconnected"].setChecked(get("drafting/mark_unconnected"))
         self.actions["view_grid"].setChecked(get("view/grid"))
-        A("view_netlist", "Update and View SPICE &Netlist", self.show_netlist, None, "netlist")
-        A("view_bom", "&Bill of Materials", self.show_bom, None, "bom")
-        A("view_log", "SPICE &Output Log", self.show_log, "Ctrl+L", "log")
-        A("view_fft", "&FFT", self.show_fft, None, "fft")
-        A("view_toolbar", "&Toolbar", lambda on: self.toolbar.setVisible(on), checkable=True)
-        A("view_statusbar", "&Status Bar", lambda on: self.statusBar().setVisible(on), checkable=True)
-        A("view_tabs", "&Window Tabs", self.toggle_tabs, checkable=True)
+        self.actions["view_anchors"].setChecked(get("view/mark_anchors"))
+        A("bom_show", "Show on Schematic", self.bom_on_schematic, None, "check", on="sch")
+        A("bom_paste", "Paste to clipboard", self.bom_to_clipboard, on="sch")
+        A("eff_show", "Show on Schematic", None, None, "check", on="never",
+          tip="The efficiency report is not implemented in TuxSpice yet")
+        A("eff_paste", "Paste to clipboard", None, on="never",
+          tip="The efficiency report is not implemented in TuxSpice yet")
+        A("view_netlist", "Update and View SPICE &Netlist", self.show_netlist, None, "view_netlist", on="sch")
+        A("view_bom", "&Bill of Materials", self.show_bom, None, "bom", on="sch")
+        A("view_log", "SPICE Output &Log", self.show_log, "Ctrl+L", "log", on="doc")
+        A("view_fft", "FFT", self.show_fft, None, "fft", on="plot")
+        A("view_probe_ref", "Set Probe Reference", self.set_probe_reference, None, "probe_ref", on="sch")
+        A("view_opflags", "Show .op Data Flags", self.toggle_op_flags, None, "check", checkable=True, on="sch")
+        self.actions["view_opflags"].setChecked(True)
+        A("march_restart", "(Re-)Start", None, on="never",
+          tip="Marching waveforms are not implemented: plots appear when ngspice finishes")
+        A("march_pause", "Pause", None, on="never",
+          tip="Marching waveforms are not implemented: plots appear when ngspice finishes")
+        A("view_toolbar", "&Toolbar", lambda on: self.toolbar.setVisible(on), None, "check", checkable=True)
+        A("view_statusbar", "&Status Bar", lambda on: self.statusBar().setVisible(on), None, "check",
+          checkable=True)
+        A("view_tabs", "Window Tabs", self.toggle_tabs, None, "check", checkable=True)
         for k in ("view_toolbar", "view_statusbar"):
             self.actions[k].setChecked(True)
         self.actions["view_tabs"].setChecked(self.settings_bool("view/window_tabs", True))
-        # Plot settings (waveform window)
-        A("plot_autorange", "&Autorange Y-axis", lambda: pv() and pv().autorange(), "Ctrl+Y", "autorange",
-          tip="Autorange vertical scale(s)")
+        # Plot Settings (waveform window); keys shared with schematic commands are swapped in
+        # by enabling one or the other, as LTspice does
         A("sim_add_trace", "&Visible Traces", self.add_traces, None, "waves",
           tip="Select which traces are visible / Open the waveform viewer")
-        A("plot_add_trace", "Add &trace", self.add_traces, None, "waves")
-        A("plot_delete_traces", "&Delete Traces", lambda: pv() and pv()._delete_all(pv().active), None, "delete")
-        A("plot_add_pane", "Add &Plot Pane", lambda: pv() and pv().add_pane())
-        A("plot_grid", "&Grid", lambda on: pv() and pv().set_grid(on), checkable=True)
+        A("plot_add_trace", "Add &trace", self.add_traces, "A", "add_trace", on="plot")
+        A("plot_delete_traces", "&Delete Traces\tBackspace or Del", lambda: pv() and pv().start_delete_mode(),
+          ["Backspace", "Del"], "delete", on="plot")
+        A("plot_select_steps", "Select Steps", lambda: pv() and pv().select_steps_dialog(), "Shift+S",
+          "select_steps", on="plot")
+        A("plot_cursor", "Place &Cursor on Active Trace", lambda: pv() and pv().place_cursor(), "C", "cursor",
+          on="plot")
+        A("plot_clear_cursors", "Clear All Cursors\tShift+C or Esc", lambda: pv() and pv().clear_cursors(), ["Shift+C", "Esc"],
+          "clear_cursors", on="plot")
+        A("plot_redraw", "Redraw", lambda: pv() and pv().redraw(), "F5", "redraw", on="plot")
+        A("plot_pane_above", "Add &Plot Pane Above Active Pane", lambda: pv() and pv().add_pane_at(above=True),
+          "P", "pane_above", on="plot")
+        A("plot_pane_below", "Add Plot Pane &Below Active Pane", lambda: pv() and pv().add_pane_at(above=False),
+          "B", "pane_below", on="plot")
+        A("plot_pane_up", "&Move Active Pane Up", lambda: pv() and pv().move_active_pane(-1), "U", "pane_up",
+          on="plot")
+        A("plot_pane_down", "Move Active Pane Do&wn", lambda: pv() and pv().move_active_pane(1), "D",
+          "pane_down", on="plot")
+        A("plot_pane_delete", "Delete Active Pane", lambda: pv() and pv().delete_pane(pv().active), None,
+          "pane_delete", on="plot")
+        A("plot_sync_x", "Sync. &Horiz. Axes", lambda on: pv() and pv().set_sync_x(on), None, "check",
+          checkable=True, on="plot")
+        A("plot_grid", "&Grid", lambda on: pv() and pv().set_grid(on), "Ctrl+G", "check", checkable=True,
+          on="plot")
+        A("plot_reset_colors", "Reset Colors", lambda: pv() and pv().reset_colors(), None, "colors_reset",
+          on="plot")
+        A("plot_mark_points", "Mark &Data Points", lambda on: pv() and pv().set_mark_points(on), None, "check",
+          checkable=True, on="plot")
+        A("eye_setup", "Setup Eye Diagram...", None, on="never",
+          tip="Eye diagrams are not implemented in TuxSpice yet")
+        A("plot_undo", "Und&o", lambda: pv() and pv().undo(), "Ctrl+Z", "undo", on="plot")
+        A("plot_redo", "&Redo", lambda: pv() and pv().redo(), "Ctrl+Shift+Z", "redo", on="plot")
+        A("plot_autorange", "Autorange &Y-axis", lambda: pv() and pv().autorange(), "Ctrl+Y", "autorange",
+          tip="Autorange vertical scale(s)", on="plot")
+        A("plot_manual_limits", "&Manual Limits", lambda: pv() and pv().manual_limits_dialog(), None,
+          "manual_limits", on="plot")
+        A("plot_autoranging", "&Autoranging", lambda on: pv() and setattr(pv(), "autoranging", on), None,
+          "check", checkable=True, on="plot")
+        A("notes_cursor_pos", "Cursor Position", lambda: pv() and pv().annotate_cursor(), "L", "cursor_pos",
+          on="plot")
+        for key, text in (("notes_pm", "Annotate Phase Margin"), ("notes_gm", "Annotate Gain Margin"),
+                          ("notes_steps", "Annotate Steps"), ("notes_nyquist", "Draw Nyquist Unit Circle")):
+            A(key, text, None, on="never", tip="Not implemented in TuxSpice yet")
+        for key, text, kind, keyseq, ic in (("notes_text", "Text", "text", "T", "text"),
+                                           ("notes_arrow", "Arrow", "arrow", None, "arrow"),
+                                           ("notes_line", "Line", "line", "I", "line"),
+                                           ("notes_rect", "Rectangle", "rect", "R", "rectangle"),
+                                           ("notes_ellipse", "Ellipse", "ellipse", None, "ellipse")):
+            A(key, text, lambda _=False, k=kind: pv() and pv().start_annotation(k), keyseq, ic, on="plot")
+        A("notes_style", "Line Style/Color", lambda: pv() and pv().annotation_style_dialog(), None, "line_style",
+          on="plot")
+        A("plot_save", "Save Plot Settings", lambda: self.save_plot_settings(), "Ctrl+S", "save", on="plot")
+        A("plot_save_as", "Save Plot Settings &As...", lambda: self.save_plot_settings(ask=True), "Ctrl+Shift+S",
+          "save_as", on="plot")
+        A("plot_open", "Open Plot Settings File...", self.open_plot_settings, "O", "open", on="plot")
+        A("plot_reload", "Reload Plot Settings", self.reload_plot_settings, "Ctrl+Space", "reload", on="plot")
+        A("plot_defs", "Edit Plot Defs File", self.open_plot_defs, None, "plot_defs")
+        A("plot_add_pane", "Add &Plot Pane", lambda: pv() and pv().add_pane(), on="plot")
         # Simulate
         A("sim_run", "&Run/Pause", self.run_simulation, "Alt+R", "run", tip="Run/Pause LTspice-compatible simulation")
         A("sim_halt", "S&top", self.halt_simulation, "Alt+S", "halt", tip="Stop the current simulation right now")
+        A("sim_clear", "Clear Waveforms", self.clear_waveforms, "0", "clear_waves", on="sch")
+        A("eff_start", "Mark Start", None, on="never", tip="Efficiency calculation is not implemented in TuxSpice yet")
+        A("eff_end", "Mark End", None, on="never", tip="Efficiency calculation is not implemented in TuxSpice yet")
         # Tools
         A("tools_settings", "&Settings", self.open_settings, None, "settings",
           tip="Access simulation and operation options")
         A("tools_colors", "&Color Preferences", self.color_prefs, None, "colors")
-        A("tools_copy_bitmap", "Copy bitmap to Clipboard", self.copy_bitmap, None, "copy_bitmap")
+        A("tools_copy_bitmap", "Copy bitmap to Clipboard", self.copy_bitmap, None, "copy_bitmap", on="sch")
+        A("tools_copy_graph", "Copy Graph Image to Clipboard", self.copy_bitmap, None, "copy_bitmap", on="plot")
+        A("tools_write_image", "Write image to .svg file", self.write_image, None, "write_image", on="doc")
+        A("tools_export_netlist", "Export Netlist", self.export_pcb_netlist, None, "export", on="sch")
+        A("tools_ai", "Configure Third-Party AI Assistants...", self.configure_ai, None, "ai",
+          tip="Let AI assistants read, edit and simulate designs through MCP")
         # Window
         A("win_tile_h", "Tile &Horizontally", self.tile_horizontal, None, "tile_h",
-          tip="Arrange windows as non-overlapping horizontal tiles")
+          tip="Arrange windows as non-overlapping horizontal tiles", on="doc")
         A("win_tile_v", "Tile &Vertically", self.tile_vertical, None, "tile_v",
-          tip="Arrange windows as non-overlapping vertical tiles")
+          tip="Arrange windows as non-overlapping vertical tiles", on="doc")
         A("win_cascade", "&Cascade", self.mdi.cascadeSubWindows, None, "cascade",
-          tip="Arrange windows so they overlap")
-        A("win_close_all", "Close &Everything", self.mdi.closeAllSubWindows, None, "close_all")
+          tip="Arrange windows so they overlap", on="doc")
+        A("win_close_all", "Close &Everything", self.close_everything, None, "close_all", on="doc")
+        A("win_arrange", "&Arrange Icons", self.arrange_icons, None, "arrange", on="doc")
+        A("win_float", "Float Window", self.float_window, None, "check", checkable=True, on="doc")
         # Help
         A("help_topics", "TuxSpice &Help", self.open_help, "F1", "help")
-        A("help_shortcuts", "&Keyboard Shortcut Cheat Sheet", self.show_shortcuts, None, "keyboard")
+        A("help_shortcuts", "Keyboard Shortcut Cheat Sheet", self.show_shortcuts, None, "keyboard")
         A("help_edit_shortcuts", "&Edit Keyboard Shortcuts...", self.edit_shortcuts)
         A("help_changelog", "Show LTspice Change Log", lambda: self._show_help_text("LTspiceChangeLog.txt"),
-          None, "netlist")
+          None, "ltspice_log")
         A("help_model_changelog", "Show Model Change Log", lambda: self._show_help_text("ChangeLog.txt"),
-          None, "netlist")
+          None, "model_log")
         A("help_about", "&About TuxSpice", self.about, None, "about")
-
-    # menu layouts: LTspice swaps the menu bar between schematic and waveform windows
-    SCHEMATIC_MENUS = [
-        ("&File", ["file_new", "file_open", "file_examples", "file_save", "file_save_as", "file_save_all",
-                   "file_close", None, "file_print", "file_export", None, "@recent", None, "file_exit"]),
-        ("&Edit", ["edit_undo", "edit_redo", "edit_text", "edit_directive", "sim_edit_cmd", "edit_resistor",
-                   "edit_capacitor", "edit_inductor", "edit_diode", "edit_voltage", "edit_component",
-                   "edit_rotate", "edit_mirror", "edit_wire", "edit_label", "edit_ground", "edit_dataflag",
-                   "edit_delete", "edit_duplicate", "edit_move", "edit_drag", "edit_find", "@draw"]),
-        ("&Hierarchy", ["hier_symbol"]),
-        ("&View", ["view_zoom_area", "view_zoom_back", "view_fit", None, "view_grid", "view_unconnected",
-                   None, "view_bom", "view_netlist", "view_log", None, "sim_add_trace", "plot_autorange", None,
-                   "view_toolbar", "view_statusbar", "view_tabs"]),
-        ("&Simulate", ["sim_run", "sim_halt", None, "tools_settings", None, "sim_edit_cmd"]),
-        ("&Tools", ["tools_copy_bitmap", "tools_settings", "tools_colors"]),
-        ("&Window", ["win_tile_h", "win_tile_v", "win_cascade", "win_close_all"]),
-        ("&Help", ["help_topics", "help_shortcuts", "help_edit_shortcuts", "file_examples", None,
-                   "help_model_changelog", "help_changelog", "help_about"]),
-    ]
-    WAVEFORM_MENUS = [
-        ("&File", ["file_new", "file_open", "file_examples", "plot_save", "file_close", None, "file_print",
-                   "file_export", None, "file_export_data", None, "@recent", None, "file_exit"]),
-        ("&View", ["view_zoom_area", "view_zoom_back", "view_fit", None, "view_log", None, "view_fft", None,
-                   "view_toolbar", "view_statusbar", "view_tabs"]),
-        ("&Plot Settings", ["sim_add_trace", "plot_add_trace", "plot_delete_traces", None, "plot_add_pane",
-                            None, "plot_grid", None, "edit_undo", "edit_redo", None, "plot_autorange", None,
-                            "plot_save"]),
-        ("Simulatio&n", ["sim_run", "sim_halt"]),
-        ("&Tools", ["tools_copy_bitmap", "tools_settings", "tools_colors"]),
-        ("&Window", ["win_tile_h", "win_tile_v", "win_cascade", "win_close_all"]),
-        ("&Help", ["help_topics", "help_shortcuts", "help_edit_shortcuts", "file_examples", None,
-                   "help_model_changelog", "help_changelog", "help_about"]),
-    ]
+        # right-click menu wordings
+        al = self._alias
+        al("ctx_comment", "edit_text", "Comment Text")
+        al("ctx_copy_image", "tools_copy_bitmap", "Copy Image to Clipboard")
+        al("ctx_copy_graph", "tools_copy_graph", "Copy Image to Clipboard")
+        al("ctx_plot_defs", "plot_defs", "Plot Defs File")
+        al("ctx_add_traces", "plot_add_trace", "Add Traces")
+        al("ctx_pane_above", "plot_pane_above", "Add Plot Pane Above")
+        al("ctx_pane_below", "plot_pane_below", "Add Plot Pane Below")
+        al("ctx_pane_up", "plot_pane_up", "Move Plot Pane Up")
+        al("ctx_pane_down", "plot_pane_down", "Move Plot Pane Down")
+        al("ctx_pane_delete", "plot_pane_delete", "Delete this Pane")
+        al("ctx_waveform_settings", "tools_settings", "Waveform Settings")
+        self.actions["ctx_waveform_settings"].triggered.disconnect()
+        self.actions["ctx_waveform_settings"].triggered.connect(lambda: self.open_settings("Waveforms"))
+        for key, text in (("ctx_plot_move", "Move\tM"), ("ctx_plot_stretch", "Stretch\tS"),
+                          ("ctx_plot_duplicate", "Duplicate\tCtrl+C")):
+            A(key, text, None, on="never", tip="Plot annotations can't be moved yet")
 
     def _build_menus(self):
+        from . import menus
         mb = self.menuBar()
-        a = self.actions
         self.recent_menus = []
         self.menu_sets = {}
-        for kind, layout in (("schematic", self.SCHEMATIC_MENUS), ("waveform", self.WAVEFORM_MENUS)):
-            menus = []
-            for title, keys in layout:
+        self._dynamic = []
+        for kind, layout in (("empty", menus.EMPTY_MENUS), ("schematic", menus.SCHEMATIC_MENUS),
+                             ("waveform", menus.WAVEFORM_MENUS)):
+            top = []
+            for title, entries in layout:
                 m = mb.addMenu(title)
-                menus.append(m)
-                for k in keys:
-                    if k is None:
-                        m.addSeparator()
-                    elif k == "@draw":
-                        dm = m.addMenu("Draw")
-                        for d in ("draw_line", "draw_rectangle", "draw_circle", "draw_arc"):
-                            dm.addAction(a[d])
-                    elif k == "@recent":
-                        self.recent_menus.append(m.addMenu("Recent Files"))
-                    else:
-                        m.addAction(a[k])
-            self.menu_sets[kind] = menus
-        self.recent_menu = self.recent_menus[0]
-        self._refresh_recent()
-        self._show_menus("schematic")
+                top.append(m)
+                m.aboutToShow.connect(self._update_actions)
+                self._fill_menu(m, entries)
+            self.menu_sets[kind] = top
+        self.recent_menu = self.recent_menus[0] if self.recent_menus else None
+        self._show_menus("empty")
+
+    def _fill_menu(self, m, entries):
+        """Menus holding the recent files or the window list are rebuilt each time they open."""
+        from . import menus
+        menus.build(m, entries, self.actions, self._special_entry)
+        if any(e in ("@recent", "@windows") for e in entries if isinstance(e, str)):
+            m.aboutToShow.connect(lambda m=m, e=entries: (m.clear(), menus.build(m, e, self.actions,
+                                                                                    self._special_entry)))
+            self.recent_menus.append(m)
+
+    def _special_entry(self, name, menu):
+        if name == "@recent":
+            for i, p in enumerate(self._recent()[:8]):
+                short = p if len(p) <= 48 else "..." + p[-45:]
+                a = menu.addAction(icons.icon("schematic_doc" if p.lower().endswith(".asc") else "waveform_doc"),
+                                   short, lambda p=p: self.open_file(p))
+                a.setToolTip(p)
+        elif name == "@windows":
+            active = self.mdi.activeSubWindow()
+            for i, sub in enumerate(self.mdi.subWindowList(), 1):
+                w = sub.widget()
+                a = menu.addAction(f"&{i} {getattr(w, 'title', sub.windowTitle())}",
+                                   lambda s=sub: self.mdi.setActiveSubWindow(s))
+                a.setCheckable(True)
+                a.setChecked(sub is active)
+
+    def _refresh_recent(self):
+        pass                       # recent files are listed when the menu opens
 
     def _show_menus(self, kind):
-        for k, menus in self.menu_sets.items():
-            for m in menus:
+        for k, menus_ in self.menu_sets.items():
+            for m in menus_:
                 m.menuAction().setVisible(k == kind)
+
+    def context_menu(self, kind, global_pos):
+        """Right-click menu of a schematic or waveform window (LTspice 26 layout)."""
+        from PySide6.QtWidgets import QMenu
+        from . import menus
+        m = QMenu(self)
+        menus.build(m, menus.SCHEMATIC_CONTEXT if kind == "schematic" else menus.WAVEFORM_CONTEXT,
+                    self.actions)
+        self._update_actions()
+        m.exec(global_pos)
 
     def _build_toolbar(self):
         tb = self.addToolBar("Main")
         tb.setObjectName("main_toolbar")
         tb.setMovable(True)                # LTspice's toolbar sits in a rebar with a gripper
-        tb.setIconSize(QSize(28, 28))
-        # 28 px icons on a 34 px pitch, flat buttons, as in LTspice
-        tb.setStyleSheet("QToolBar { spacing: 1px; padding: 2px 2px; }"
-                         "QToolButton { padding: 0px; margin: 0px; border: 1px solid transparent; }"
-                         "QToolButton:hover { border: 1px solid #a0a0a0; background: #e5f1fb; }"
-                         "QToolButton:pressed, QToolButton:checked { background: #cce4f7; }")
         self.toolbar = tb
+        self.apply_toolbar_size()
         # same buttons, same order as LTspice 26
         for k in ["tools_settings", "file_new", "file_open", "file_save", "file_print", "sim_edit_cmd",
                   "sim_run", "sim_halt", "win_tile_v", "win_tile_h", "win_cascade", "view_zoom_area",
@@ -386,32 +557,60 @@ class MainWindow(QMainWindow):
             tip = a.toolTip().split(" (")[0]
             # toolbar tooltips read "Name (key)" and the status bar shows the long description
             a.setStatusTip(tip)
-            a.setToolTip(a.text().replace("&", "") + (f" ({keys[0].toString()})" if keys else ""))
+            a.setToolTip(a.text().split("\t")[0].replace("&", "") + (f" ({keys[0].toString()})" if keys else ""))
             tb.addAction(a)
+
+    def apply_toolbar_size(self):
+        """Settings > Operation > Toolbar icon size. Default: 28 px icons on a 34 px pitch."""
+        from .settings_dialog import get
+        px = {"Small": 20, "Large": 36}.get(get("operation/toolbar_size"), 28)
+        self.toolbar.setIconSize(QSize(px, px))
+        self.toolbar.setStyleSheet("QToolBar { spacing: 1px; padding: 2px 2px; }"
+                                   "QToolButton { padding: 0px; margin: 0px; border: 1px solid transparent; }"
+                                   "QToolButton:hover { border: 1px solid #a0a0a0; background: #e5f1fb; }"
+                                   "QToolButton:pressed, QToolButton:checked { background: #cce4f7; }")
 
     def _update_actions(self, *_):
         sw = self.schematic()
-        pw = self.plot_window()
+        w = self.active_widget()
+        on_plot = isinstance(w, PlotWindow)
+        state = {"any": True, "doc": w is not None, "sch": sw is not None, "plot": on_plot, "never": False}
         for k, a in self.actions.items():
-            if k.startswith(("edit_", "draw_")) or k in ("view_netlist", "view_bom", "sim_edit_cmd",
-                                                         "view_zoom_back", "view_zoom_area", "hier_symbol"):
-                a.setEnabled(sw is not None)
-        on_plot = isinstance(self.active_widget(), PlotWindow)
-        for k in ("edit_undo", "edit_redo", "view_zoom_area", "view_zoom_back"):
-            self.actions[k].setEnabled(sw is not None or on_plot)
-        for k in ("plot_autorange", "plot_add_trace", "plot_delete_traces", "plot_add_pane", "plot_grid",
-                  "plot_save", "file_export_data", "view_fft"):
-            self.actions[k].setEnabled(on_plot)
-        if on_plot:
-            self.actions["plot_grid"].setChecked(pw.viewer.show_grid)
-        self._show_menus("waveform" if on_plot else "schematic")
+            a.setEnabled(state.get(getattr(a, "on", "any"), True))
+        pv = w.viewer if on_plot else None
+        if pv is not None:
+            for k, val in (("plot_grid", pv.show_grid), ("plot_sync_x", pv.sync_x),
+                           ("plot_mark_points", pv.mark_points), ("plot_autoranging", pv.autoranging)):
+                self.actions[k].setChecked(val)
+            self.actions["plot_pane_delete"].setEnabled(len(pv.panes) > 1)
+            self.actions["plot_pane_up"].setEnabled(pv.panes.index(pv.active) > 0 if pv.active in pv.panes else False)
+            self.actions["plot_pane_down"].setEnabled(pv.active in pv.panes and pv.panes.index(pv.active) <
+                                                      len(pv.panes) - 1)
+            self.actions["plot_select_steps"].setEnabled(len(pv.steps()) > 1)
+            self.actions["plot_cursor"].setEnabled(any(p.traces for p in pv.panes))
+            self.actions["notes_cursor_pos"].setEnabled(bool(pv.cursors))
+            self.actions["plot_clear_cursors"].setEnabled(bool(pv.cursors) or pv.mode is not None)
+            self.actions["plot_undo"].setEnabled(pv.can_undo())
+            self.actions["plot_redo"].setEnabled(pv.can_redo())
+            self.actions["plot_reload"].setEnabled(pv.plt_path is not None)
+        if sw is not None:
+            self.actions["view_opflags"].setChecked(sw.doc.scene.show_op_flags)
+        self.actions["view_probe_ref"].setEnabled(sw is not None and sw.sim_plot is not None)
+        self.actions["win_float"].setChecked(w is not None and w in self.floating)
+        self._show_menus("waveform" if on_plot else "schematic" if w is not None else "empty")
         running = self.sim_thread is not None
         self.actions["sim_halt"].setEnabled(running)
-        self.actions["sim_run"].setEnabled(not running and self.active_widget() is not None)
+        can_run = not running and (sw is not None or isinstance(w, TextWindow) or
+                                   (on_plot and w.source is not None))
+        self.actions["sim_run"].setEnabled(can_run)
         self.actions["sim_add_trace"].setEnabled(self.plot_window() is not None)
-        self._sync_tabs()
+        self.actions["plot_autorange"].setEnabled(self.plot_window() is not None)
+        self.actions["sim_clear"].setEnabled(sw is not None and bool(self.plot_windows(sw)))
         self.update_orient_actions()
-        w = self.active_widget()
+        for a in self.actions.values():
+            if hasattr(a, "alias_of"):
+                a.setEnabled(self.actions[a.alias_of].isEnabled())
+        self._sync_tabs()
         if w is not None:
             self.setWindowTitle(f"{APP_NAME} - [{w.title}]")
         else:
@@ -431,6 +630,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ windows
     def active_widget(self):
+        aw = QApplication.activeWindow()
+        if aw is not None and aw in getattr(self, "floating", []):
+            return aw
         sub = self.mdi.activeSubWindow()
         return sub.widget() if sub else None
 
@@ -587,6 +789,8 @@ class MainWindow(QMainWindow):
                     ev.ignore()
                     return
         self.settings.setValue("main/geometry", self.saveGeometry())
+        if getattr(self, "mcp_host", None) is not None:
+            self.mcp_host.stop()
         self.halt_simulation()
         ev.accept()
 
@@ -615,20 +819,10 @@ class MainWindow(QMainWindow):
             img.save(path)
 
     def copy_bitmap(self):
-        img = self._render_active()
+        w = self.active_widget()
+        img = w.viewer.grab().toImage() if isinstance(w, PlotWindow) else self._render_active()
         if img is not None:
             QApplication.clipboard().setImage(img)
-
-    def print_active(self):
-        from PySide6.QtPrintSupport import QPrintDialog, QPrinter
-        sw = self.schematic()
-        if sw is None:
-            return
-        printer = QPrinter(QPrinter.HighResolution)
-        if QPrintDialog(printer, self).exec() == QDialog.Accepted:
-            p = QPainter(printer)
-            sw.doc.scene.render(p, source=sw.doc.scene.itemsBoundingRect())
-            p.end()
 
     # ------------------------------------------------------------ edit / view
     def _undo(self, undo):
@@ -701,7 +895,8 @@ class MainWindow(QMainWindow):
             v.set_grid(not v.show_grid)
             self.actions["plot_grid"].setChecked(v.show_grid)
             return
-        self.settings.setValue("view/grid", on)
+        from .settings_dialog import put
+        put("view/grid", on)
         for sub in self.mdi.subWindowList():
             w = sub.widget()
             if isinstance(w, SchematicWindow):
@@ -739,7 +934,8 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def toggle_unconnected(self, on):
-        self.settings.setValue("drafting/mark_unconnected", on)
+        from .settings_dialog import put
+        put("drafting/mark_unconnected", on)
         for sub in self.mdi.subWindowList():
             w = sub.widget()
             if isinstance(w, SchematicWindow):
@@ -763,7 +959,22 @@ class MainWindow(QMainWindow):
         if sw is None:
             return
         nl = generate_netlist(sw.doc.sch, sw.doc.lib)
-        self._add_window(TextWindow(f"{sw.doc.title} netlist", nl.text), f"{Path(sw.doc.title).stem}.net")
+        self._add_window(TextWindow(f"{sw.doc.title} netlist", self._netlist_style(nl.text)),
+                         f"{Path(sw.doc.title).stem}.net")
+
+    @staticmethod
+    def _netlist_style(text):
+        """Settings > Netlist Options: convert µ to u, reverse the component order."""
+        from .settings_dialog import get
+        if get("netlist/convert_mu"):
+            text = text.replace("µ", "u").replace("μ", "u")
+        if get("netlist/reverse_order"):
+            lines = text.splitlines()
+            idx = [i for i, l in enumerate(lines) if l[:1].isalpha()]
+            for i, l in zip(idx, [lines[i] for i in reversed(idx)]):
+                lines[i] = l
+            text = "\n".join(lines) + "\n"
+        return text
 
     def show_bom(self):
         sw = self.schematic()
@@ -783,19 +994,10 @@ class MainWindow(QMainWindow):
         text = getattr(self, "last_log", "") or "No simulation has been run."
         self._add_window(TextWindow("SPICE Error Log", text), "SPICE Error Log")
 
-    def open_settings(self):
-        from .settings_dialog import SettingsDialog, get
-        if SettingsDialog(self).exec() != QDialog.Accepted:
-            return
-        self.actions["view_grid"].setChecked(get("view/grid"))
-        self.actions["view_unconnected"].setChecked(get("drafting/mark_unconnected"))
-        for sub in self.mdi.subWindowList():
-            w = sub.widget()
-            if isinstance(w, SchematicWindow):
-                w.view.show_grid = get("view/grid")
-                w.view.reverse_wheel = get("drafting/reverse_wheel")
-                w.view.mark_unconnected = get("drafting/mark_unconnected")
-                w.view.viewport().update()
+    def open_settings(self, tab=None):
+        from .settings_dialog import SettingsDialog
+        if SettingsDialog(self, tab if isinstance(tab, str) else None).exec() == QDialog.Accepted:
+            self.apply_settings()
 
     def color_prefs(self):
         from .color_dialog import ColorDialog
@@ -881,42 +1083,64 @@ class MainWindow(QMainWindow):
             sw.set_tool(sw_tools_place_text(sw, cmd))
         return True
 
-    def run_simulation(self):
+    def run_simulation(self, _checked=False, target=None, interactive=True):
+        """Run the active (or given) schematic or netlist. interactive=False (an AI assistant via
+        MCP) never opens dialogs; returns (started, message)."""
         if self.sim_thread is not None:
-            return
-        w = self.active_widget()
+            return False, "a simulation is already running"
+        w = target if target is not None else self.active_widget()
         if isinstance(w, PlotWindow) and w.source is not None:
             w = w.source
+        from .settings_dialog import get, paths, spice_options
+        if get("operation/save_on_run"):
+            self.save_all()
         if isinstance(w, SchematicWindow):
             if not any(t.is_directive and t.body.split() and t.body.split()[0].lower() in ANALYSES
                        for t in w.doc.sch.texts) and not any(
                     l.strip().lower().startswith(ANALYSES) for t in w.doc.sch.texts if t.is_directive
                     for l in t.body.splitlines()):
+                if not interactive:
+                    return False, "the schematic has no analysis command (.tran, .ac, .dc, .op, .noise, .tf)"
                 self.edit_sim_command()
-                return
+                return False, "no analysis command"
             nl = generate_netlist(w.doc.sch, w.doc.lib)
-            if nl.errors:
+            if nl.errors and interactive:
                 QMessageBox.warning(self, "Netlist", "\n".join(nl.errors))
             base = (w.doc.path.with_suffix("") if w.doc.path
                     else config.DATA_DIR / "untitled" / f"Draft{self.untitled or 1}")
             if w.doc.path:
                 nl_path = w.doc.path.with_suffix(".net")
                 try:
-                    nl_path.write_text(nl.text, encoding="latin-1", errors="replace")
+                    nl_path.write_text(self._netlist_style(nl.text), encoding="latin-1", errors="replace")
                 except OSError:
                     base = config.DATA_DIR / "runs" / w.doc.path.stem
-            sim = Simulator(nl.text, base, w.doc.local_dirs)
+            text = nl.text
+            sim_dirs = list(w.doc.local_dirs)
         elif isinstance(w, TextWindow):
             base = (w.path.with_suffix("") if w.path else config.DATA_DIR / "runs" / "netlist")
-            sim = Simulator(w.toPlainText(), base, [w.path.parent] if w.path else [])
+            text = w.toPlainText()
+            sim_dirs = [w.path.parent] if w.path else []
         else:
-            return
+            return False, "nothing to simulate: activate a schematic or netlist"
+        # Settings > Waveforms: keep .raw/.log files in one directory
+        if get("waveform/raw_dir_on") and get("waveform/raw_dir"):
+            base = Path(get("waveform/raw_dir")).expanduser() / base.name
+        # Settings > SPICE: non-default tolerances and integration method
+        opts = spice_options()
+        if opts:
+            from ..sim.runner import _with_options
+            text = _with_options(text, opts)
+        user = get("paths/user_dir")
+        sim = Simulator(text, base, sim_dirs + [Path(p) for p in paths("paths/lib_paths")] +
+                        ([Path(user).expanduser()] if user else []))
         self.sim_owner = w
+        self._sim_interactive = interactive
         self.sim_thread = SimThread(sim)
         self.sim_thread.done.connect(self._sim_done)
         self.status_label.setText("Simulating...")
         self.sim_thread.start()
         self._update_actions()
+        return True, "\n".join(nl.errors) if isinstance(w, SchematicWindow) else ""
 
     def halt_simulation(self):
         if self.sim_thread is not None:
@@ -930,9 +1154,15 @@ class MainWindow(QMainWindow):
         if res.measurements:
             self.last_log = "Measurements:\n" + "\n".join(f"{k}: {v}" for k, v in res.measurements) \
                 + "\n\n" + self.last_log
+        if owner is not None and isValid(owner):
+            owner.sim_log = self.last_log           # per document, for MCP get_spice_log
+            owner.sim_plots = res.plots if res.ok else None
         self._update_actions()
         if not res.ok:
             self.status_label.setText("Simulation failed")
+            if not getattr(self, "_sim_interactive", True):
+                self.status_label.setText("Simulation failed (started by an AI assistant; see Ctrl+L)")
+                return
             msg = QMessageBox(QMessageBox.Critical, APP_NAME, "\n".join(res.errors[:12]) or "Simulation failed",
                               parent=self)
             msg.setDetailedText(res.log[-20000:])
@@ -940,6 +1170,7 @@ class MainWindow(QMainWindow):
             return
         self.status_label.setText("Simulation done" + (f" — {len(res.warnings)} warning(s), see Ctrl+L"
                                                        if res.warnings else ""))
+        self._last_raw = res.raw_path
         plot = res.main_plot()
         if plot is None:
             return
@@ -1018,12 +1249,25 @@ class MainWindow(QMainWindow):
         dlg.show()
         self.pz_dialog = dlg
 
-    def _show_plot(self, owner, plot, title, slot=0):
+    def _new_viewer(self, plot, title):
         viewer = WaveformViewer(plot, title)
         viewer.status.connect(self.status_label.setText)
+        viewer.menu_provider = lambda pos, v=viewer: self._plot_context_menu(v, pos)
+        viewer.traces_changed.connect(self._update_actions)
+        return viewer
+
+    def _plot_context_menu(self, viewer, pos):
+        for sub in self.mdi.subWindowList():
+            if isinstance(sub.widget(), PlotWindow) and sub.widget().viewer is viewer:
+                self.mdi.setActiveSubWindow(sub)
+        self.context_menu("waveform", pos)
+
+    def _show_plot(self, owner, plot, title, slot=0):
+        viewer = self._new_viewer(plot, title)
         pw = self.plot_window(owner, slot) if owner is not None else None
         if pw is not None:
             old = pw.viewer.trace_names()
+            viewer.plt_path = pw.viewer.plt_path
             pw.replace_viewer(viewer)
             for expr in old:
                 viewer.add_trace(expr)
@@ -1045,9 +1289,11 @@ class MainWindow(QMainWindow):
                     layout = None
                 if layout:
                     viewer.apply_layout(layout)
+                    viewer.plt_path = plt
         viewer.save_plot_settings.connect(lambda pw=pw: self.save_plot_settings(pw))
         if isinstance(owner, SchematicWindow):
             owner.sim_plot = plot
+        pw.raw_path = getattr(self, "_last_raw", None)
         self._update_actions()
 
     def _tile_with(self, owner, plot_sub):
@@ -1082,16 +1328,25 @@ class MainWindow(QMainWindow):
             if err:
                 self.status_label.setText(err)
 
-    def save_plot_settings(self, pw=None):
+    def save_plot_settings(self, pw=None, ask=False):
+        """Save Plot Settings (Ctrl+S in a plot) writes <schematic>.plt, which is reloaded after
+        the next run; Save Plot Settings As asks for a name."""
         pw = pw or self.plot_window()
         if pw is None:
             return
-        src = pw.source.doc.path if isinstance(pw.source, SchematicWindow) else None
-        start = str(src.with_suffix(".plt")) if src else ""
-        path, _ = QFileDialog.getSaveFileName(self, "Save Plot Settings", start, "Plot settings (*.plt)")
-        if path:
-            name = pw.viewer.plot.plotname or "Transient Analysis"
-            pltfile.write_plt(path, {name: pw.viewer.layout()})
+        path = pw.viewer.plt_path
+        if path is None:
+            src = pw.source.doc.path if isinstance(pw.source, SchematicWindow) else None
+            path = src.with_suffix(".plt") if src else None
+        if ask or path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Save Plot Settings As", str(path or ""),
+                                                  "Plot settings (*.plt)")
+            if not path:
+                return
+        name = pw.viewer.plot.plotname or "Transient Analysis"
+        pltfile.write_plt(path, {name: pw.viewer.layout()})
+        pw.viewer.plt_path = Path(path)
+        self._update_actions()
 
     def show_fft(self):
         pw = self.plot_window()
@@ -1113,8 +1368,7 @@ class MainWindow(QMainWindow):
                   for n in dlg.selected()}
         t0, t1 = v.visible_x_range() if dlg.visible_only.isChecked() else (t[0], t[-1])
         plot = fft_plot(t, traces, npts=dlg.points(), window=dlg.window.currentText(), t0=t0, t1=t1)
-        viewer = WaveformViewer(plot, f"FFT of {pw.title}")
-        viewer.status.connect(self.status_label.setText)
+        viewer = self._new_viewer(plot, f"FFT of {pw.title}")
         for n in traces:
             viewer.add_trace(n)
         self._add_window(PlotWindow(viewer, None), f"FFT of {pw.title}")
@@ -1130,7 +1384,7 @@ class MainWindow(QMainWindow):
         for k, a in self.actions.items():
             if a.shortcuts():
                 keys = ", ".join(s.toString() for s in a.shortcuts())
-                lines.append(f"{a.text().replace('&', ''):<32}{keys}")
+                lines.append(f"{a.text().split(chr(9))[0].replace('&', ''):<36}{keys}")
         w = TextWindow("Keyboard Shortcuts", "\n".join(lines))
         w.setReadOnly(True)
         self._add_window(w, "Keyboard Shortcuts")
@@ -1162,6 +1416,351 @@ class MainWindow(QMainWindow):
                           f"<b>{APP_NAME}</b><br>LTspice-compatible schematic capture and waveform "
                           "viewer for Linux.<br>Simulation engine: ngspice.<br><br>"
                           "Symbol and model libraries are read from your own LTspice installer.")
+
+    # ------------------------------------------------------------ LTspice 26 menu commands
+    def _set_print_mono(self, on):
+        self.settings.setValue("print/monochrome", on)
+
+    def _printer(self):
+        from PySide6.QtPrintSupport import QPrinter
+        if getattr(self, "printer", None) is None:
+            self.printer = QPrinter(QPrinter.HighResolution)
+        return self.printer
+
+    def _paint_active(self, painter, page_rect=None):
+        """Draw the active schematic or plot onto a printer/preview page."""
+        w = self.active_widget()
+        if isinstance(w, SchematicWindow):
+            sc = w.doc.scene
+            target = page_rect if page_rect is not None else painter.viewport()
+            sc.render(painter, target, sc.itemsBoundingRect().adjusted(-32, -32, 32, 32))
+        elif isinstance(w, PlotWindow):
+            pm = w.viewer.grab()
+            target = page_rect if page_rect is not None else painter.viewport()
+            size = pm.size().scaled(target.size(), Qt.KeepAspectRatio)
+            painter.drawPixmap(target.x(), target.y(), size.width(), size.height(), pm)
+
+    def _print_to(self, printer):
+        from PySide6.QtPrintSupport import QPrinter
+        printer.setColorMode(QPrinter.GrayScale if self.actions["file_print_mono"].isChecked()
+                             else QPrinter.Color)
+        p = QPainter(printer)
+        self._paint_active(p, printer.pageRect(QPrinter.DevicePixel).toRect().translated(
+            -printer.pageRect(QPrinter.DevicePixel).toRect().topLeft()))
+        p.end()
+
+    def print_active(self):
+        from PySide6.QtPrintSupport import QPrintDialog
+        if self.active_widget() is None:
+            return
+        printer = self._printer()
+        if QPrintDialog(printer, self).exec() == QDialog.Accepted:
+            self._print_to(printer)
+
+    def print_preview(self):
+        from PySide6.QtPrintSupport import QPrintPreviewDialog
+        if self.active_widget() is None:
+            return
+        dlg = QPrintPreviewDialog(self._printer(), self)
+        dlg.paintRequested.connect(self._print_to)
+        dlg.exec()
+
+    def print_setup(self):
+        from PySide6.QtPrintSupport import QPageSetupDialog
+        QPageSetupDialog(self._printer(), self).exec()
+
+    def write_image(self):
+        """Tools > Write image to file: SVG (LTspice writes .emf, which Linux tools don't use)."""
+        from PySide6.QtCore import QRectF
+        from PySide6.QtSvg import QSvgGenerator
+        w = self.active_widget()
+        if w is None:
+            return
+        stem = Path(getattr(w, "title", "image").rstrip("*")).stem
+        path, _ = QFileDialog.getSaveFileName(self, "Write image to .svg file", f"{stem}.svg",
+                                              "SVG image (*.svg);;PNG image (*.png)")
+        if not path:
+            return
+        if path.lower().endswith(".png"):
+            img = self._render_active() if isinstance(w, SchematicWindow) else w.viewer.grab().toImage()
+            img.save(path)
+            return
+        gen = QSvgGenerator()
+        gen.setFileName(path)
+        if isinstance(w, SchematicWindow):
+            r = w.doc.scene.itemsBoundingRect().adjusted(-32, -32, 32, 32)
+        else:
+            r = QRectF(w.viewer.rect())
+        gen.setSize(r.size().toSize())
+        gen.setViewBox(QRectF(0, 0, r.width(), r.height()))
+        p = QPainter(gen)
+        if isinstance(w, SchematicWindow):
+            w.doc.scene.render(p, QRectF(0, 0, r.width(), r.height()), r)
+        else:
+            w.viewer.render(p)
+        p.end()
+
+    def _set_line_style(self, style):
+        self.line_style = style
+
+    def recenter(self):
+        """View > Recenter: center the drawing (or the plot data) without changing the zoom."""
+        sw = self.schematic()
+        if sw is not None:
+            sw.view.centerOn(sw.doc.scene.itemsBoundingRect().center())
+            return
+        pw = self._plot_viewer()
+        if pw is not None:
+            pw.recenter()
+
+    def toggle_anchors(self, on):
+        from .settings_dialog import put
+        put("view/mark_anchors", on)
+        for sub in self.mdi.subWindowList():
+            w = sub.widget()
+            if isinstance(w, SchematicWindow):
+                w.view.mark_anchors = on
+                w.view.viewport().update()
+
+    def toggle_op_flags(self, on):
+        sw = self.schematic()
+        if sw is not None:
+            sw.doc.scene.show_op_flags = on
+            sw.doc.scene.rebuild()
+
+    def _bom_text(self, sw):
+        rows = {}
+        for s in sw.doc.sch.symbols:
+            sym = sw.doc.lib.get(s.symbol, sw.doc.local_dirs)
+            val = s.attrs.get("Value") or (sym.attrs.get("Value", "") if sym else "")
+            rows.setdefault((s.symbol.replace("\\\\", "\\").split("\\")[-1], val), []).append(s.name)
+        lines = ["--- Bill of Materials ---", f"{'Ref.':<16}{'Qty':<5}{'Part':<20}Value"]
+        for (symn, val), names in sorted(rows.items(), key=lambda kv: sorted(kv[1])[0]):
+            lines.append(f"{', '.join(sorted(names)):<16}{len(names):<5}{symn:<20}{val}")
+        return "\n".join(lines)
+
+    def bom_on_schematic(self):
+        """View > Bill of Materials > Show on Schematic: place the BOM as a comment."""
+        sw = self.schematic()
+        if sw is None:
+            return
+        from ..model import asc as _asc
+        from .tools import PlaceTool
+        text = self._bom_text(sw).replace("\n", "\\n")
+        sw.set_tool(PlaceTool(sw, lambda: [_asc.Text(0, 0, "Left", 2, ";" + text)], repeat=False,
+                              label="Bill of Materials"))
+
+    def bom_to_clipboard(self):
+        sw = self.schematic()
+        if sw is not None:
+            QApplication.clipboard().setText(self._bom_text(sw))
+            self.status_label.setText("Bill of Materials copied to the clipboard")
+
+    def set_probe_reference(self):
+        sw = self.schematic()
+        if sw is not None:
+            sw.pick_probe_reference()
+
+    def clear_waveforms(self):
+        sw = self.schematic()
+        for pw in self.plot_windows(sw) if sw else []:
+            pw.viewer.clear()
+
+    def generate_subckt(self):
+        """Hierarchy > Generate Subckt Netlist: this sheet as a .subckt, its I/O ports as pins."""
+        sw = self.schematic()
+        if sw is None:
+            return
+        from ..model.netlist import subckt_netlist
+        name = Path(sw.doc.title.rstrip("*")).stem or "sheet"
+        text, errors = subckt_netlist(sw.doc.sch, sw.doc.lib, name)
+        QApplication.clipboard().setText(text)
+        self._add_window(TextWindow(f"{name}.sub", text), f"{name}.sub")
+        self.status_label.setText("Subcircuit netlist copied to the clipboard"
+                                  + (f" ({len(errors)} problem(s))" if errors else ""))
+
+    def export_pcb_netlist(self):
+        """Tools > Export Netlist: an ASCII netlist for PCB layout tools."""
+        sw = self.schematic()
+        if sw is None:
+            return
+        from ..model.pcbnetlist import FORMATS, export
+        fmt_name, ok = QInputDialog.getItem(self, "Export Netlist", "Netlist format:", list(FORMATS), 0, False)
+        if not ok:
+            return
+        ext = FORMATS[fmt_name]
+        stem = (sw.doc.path.with_suffix(ext) if sw.doc.path else Path(f"Draft1{ext}"))
+        path, _ = QFileDialog.getSaveFileName(self, "Export Netlist", str(stem), f"Netlist (*{ext});;All files (*)")
+        if path:
+            Path(path).write_text(export(sw.doc.sch, sw.doc.lib, fmt_name), encoding="latin-1", errors="replace")
+            self.status_label.setText(f"Wrote {fmt_name} netlist {Path(path).name}")
+
+    def execute_meas_script(self):
+        """File > Execute .MEAS Script: evaluate .meas statements from a file on this plot."""
+        pw = self.plot_window()
+        if pw is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Execute .MEAS Script", self.settings.value("file/last_dir", ""),
+                                              "Measurement scripts (*.meas *.txt *.cir *.net);;All files (*)")
+        if not path:
+            return
+        from ..model.textio import read_text
+        from ..sim import measure
+        lines = [l for l in read_text(Path(path))[0].splitlines() if l.strip().lower().startswith(".meas")]
+        parsed = [m for m in (measure.parse(l) for l in lines) if m]
+        if not parsed:
+            QMessageBox.information(self, "Execute .MEAS Script", "No .meas statements found.")
+            return
+        rows = measure.run_measures(parsed, [pw.viewer.plot])
+        text = "\n".join(f"{k}: {v}" for k, v in rows)
+        self.last_log = (getattr(self, "last_log", "") or "") + f"\n\n{Path(path).name}:\n" + text
+        w = TextWindow(f"{Path(path).name} results", text)
+        w.setReadOnly(True)
+        self._add_window(w, w.title)
+
+    def open_plot_settings(self):
+        pw = self.plot_window()
+        if pw is None:
+            return
+        start = str(pw.viewer.plt_path or "")
+        path, _ = QFileDialog.getOpenFileName(self, "Open Plot Settings File", start, "Plot settings (*.plt)")
+        if path:
+            self._load_plt(pw, Path(path))
+
+    def reload_plot_settings(self):
+        pw = self.plot_window()
+        if pw is not None and pw.viewer.plt_path is not None:
+            self._load_plt(pw, pw.viewer.plt_path)
+
+    def _load_plt(self, pw, path):
+        try:
+            layouts = pltfile.read_plt(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Plot Settings", f"Could not read {path}:\n{e}")
+            return
+        layout = layouts.get(pw.viewer.plot.plotname.lower()) or next(iter(layouts.values()), None)
+        if layout:
+            pw.viewer.clear_panes()
+            pw.viewer.apply_layout(layout)
+        pw.viewer.plt_path = Path(path)
+        self._update_actions()
+
+    def plot_defs_path(self):
+        from .settings_dialog import plot_defs_path
+        return plot_defs_path()
+
+    def open_plot_defs(self):
+        """Plot Settings > Edit Plot Defs File: .func/.param definitions for waveform expressions."""
+        path = self.plot_defs_path()
+        dlg = QDialog(self)
+        dlg.setWindowTitle(str(path))
+        lay = QVBoxLayout(dlg)
+        ed = QPlainTextEdit()
+        f = ed.font()
+        f.setFamily("Monospace")
+        ed.setFont(f)
+        ed.setPlainText(path.read_text(errors="replace") if path.exists() else
+                        "* User-defined functions and parameters for waveform expressions, e.g.\n"
+                        "* .func Pythag(x,y) {sqrt(x*x+y*y)}\n* .param twopi = 2*pi\n")
+        lay.addWidget(ed)
+        from PySide6.QtWidgets import QDialogButtonBox
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        dlg.resize(640, 420)
+        if dlg.exec() == QDialog.Accepted:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(ed.toPlainText())
+
+    def configure_ai(self):
+        from .ai_dialog import AiAssistantsDialog
+        AiAssistantsDialog(self).exec()
+
+    def start_mcp_host(self):
+        """Let MCP bridges (pyltspice-mcp, started by AI assistants) attach to this window."""
+        from .mcp_host import McpHost
+        self.mcp_host = McpHost(self)
+        if not self.mcp_host.start():
+            self.mcp_host = None
+        return self.mcp_host
+
+    def close_everything(self):
+        self.mdi.closeAllSubWindows()
+
+    def arrange_icons(self):
+        """Window > Arrange Icons: line up minimized windows along the bottom."""
+        x = 0
+        for sub in self.mdi.subWindowList():
+            if sub.isMinimized():
+                sub.move(x, self.mdi.viewport().height() - sub.height())
+                x += sub.width()
+
+    def float_window(self):
+        """Float Window: move the active window out of the main frame, or back in."""
+        w = self.active_widget()
+        if w is None:
+            return
+        if w in self.floating:
+            self.floating.remove(w)
+            w.setWindowFlags(Qt.Widget)
+            self._add_window(w, w.title)
+            return
+        sub = self.mdi.activeSubWindow()
+        if sub is None:
+            return
+        w.setParent(None)
+        self.mdi.removeSubWindow(sub)
+        sub.deleteLater()
+        w.setWindowFlags(Qt.Window)
+        w.setWindowTitle(f"{w.title} - {APP_NAME}")
+        w.addActions(list(self.actions.values()))       # keep the shortcuts working out there
+        w.installEventFilter(self)
+        self.floating.append(w)
+        w.destroyed.connect(lambda *_, w=w: w in self.floating and self.floating.remove(w))
+        w.resize(900, 600)
+        w.show()
+        self._update_actions()
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.WindowActivate and obj in getattr(self, "floating", []):
+            self._update_actions()
+        return super().eventFilter(obj, ev)
+
+    def apply_settings(self):
+        """Push Settings values into open windows."""
+        from .settings_dialog import get
+        self.actions["view_grid"].setChecked(get("view/grid"))
+        self.actions["view_unconnected"].setChecked(get("drafting/mark_unconnected"))
+        self.actions["view_anchors"].setChecked(get("view/mark_anchors"))
+        self.apply_toolbar_size()
+        self._apply_search_paths()
+        from . import render
+        render.set_font_settings(get("drafting/font"), get("drafting/font_bold"), get("drafting/font_size"),
+                                 get("drafting/pen_thickness"))
+        for w in self._all_widgets():
+            if isinstance(w, SchematicWindow):
+                w.view.show_grid = get("view/grid")
+                w.view.reverse_wheel = get("drafting/reverse_wheel")
+                w.view.mark_unconnected = get("drafting/mark_unconnected")
+                w.view.mark_anchors = get("view/mark_anchors")
+                w.doc.undo.setUndoLimit(get("drafting/undo_size")) if w.doc.undo.count() == 0 else None
+                w.doc.scene.rebuild()
+                w.view.viewport().update()
+            elif isinstance(w, PlotWindow):
+                w.viewer.apply_settings()
+        self.mdi.viewport().update()
+
+    @staticmethod
+    def _apply_search_paths():
+        from ..model.library import set_extra_roots
+        from .settings_dialog import get, paths
+        user = get("paths/user_dir")
+        set_extra_roots(paths("paths/symbol_paths") + ([str(Path(user).expanduser())] if user else []))
+
+    def _all_widgets(self):
+        return [s.widget() for s in self.mdi.subWindowList()] + list(getattr(self, "floating", []))
 
 
 def sw_tools_place_text(sw, cmd):

@@ -94,6 +94,11 @@ Open:
   - Electrometer: works but takes about 5 minutes (1 MHz chopper simulated for 15 ms).
   - Royer: encrypted ADI model; can't run outside LTspice.
 
+### 1a. Educational examples, re-measured after the Applications pass
+- 79/82 top level, unchanged (Royer encrypted, Electrometer ~5 min, PLL2 stalls). Subfolders: 10
+  FRA examples need encrypted models; PowerAmp fixed (diode `n=` = series devices); fra_eg1 uses
+  LTspice's Frequency Response Analysis (`.fra` + `@` probe), now reported as unsupported.
+
 ### 1b. Applications examples (4,277), in progress
 - `scripts/sweep_examples.py --static` classifies all examples: 3,322 need an encrypted ADI model
   (can't run outside LTspice), 1,043 don't.
@@ -133,17 +138,41 @@ Open:
   hints with operating point, LTspice-layout dialogs (Component, Net Name, R/C/L with the part
   databases, source, text, analysis), post-run tiling and focus, shared-prefix plot ticks,
   toolbar pitch and grey disabled icons. Fixed: clicks inside a part's body didn't hit it.
-- Next from Wine: the remaining Plot Settings items (pane move/delete, Mark Data Points, Manual
-  Limits, Notes & Annotations), Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks,
-  Bus tap, Mark Anchors, and checking the editing dialogs (component, analysis) against LTspice.
+- Third Wine round, menus and settings (2026-10-16): every menu captured from LTspice 26.1.1 (three
+  menu bars, all submenus, both right-click menus) and rebuilt item for item in `ui/menus.py`, with
+  icons; keys that LTspice reuses (C capacitor vs. cursor, P component vs. pane, Del, Ctrl+Z...)
+  follow the active window. Tools > Settings now has LTspice's ten tabs with its defaults and [*]
+  persistence; options with an ngspice/TuxSpice meaning work, the rest are greyed with a reason.
+  New commands: Print Preview/Setup/Monochrome, Recenter, Mark Anchors, BOM on schematic/clipboard,
+  Set Probe Reference, Clear Waveforms, Generate Subckt Netlist, Export Netlist (PCB), Write image
+  (SVG/PNG), Arrange Icons, Float Window, Show .op Data Flags; in plots: pane above/below/up/down/
+  delete, Sync Horiz. Axes, Select Steps, Place/Clear Cursors, Redraw, Reset Colors, Mark Data
+  Points, Manual Limits, Autoranging, trace undo/redo, Delete Traces mode, Notes & Annotations
+  (text, arrow, line, rectangle, ellipse, cursor position), Open/Reload Plot Settings, Plot Defs
+  file, Execute .MEAS Script, degree-based trig in expressions (LTspice's default).
+- MCP (2026-10-16): LTspice 26.1's MCP server mirrored after querying its bridge under Wine:
+  `pyltspice-mcp` (stdio, no dependencies) with the same 17 tools and reply format, GUI-attached
+  through a localhost host in the window (edits are undo steps) or headless, LTspice's AI
+  reference docs from `reference.zip`, and Tools > Configure Third-Party AI Assistants for
+  Claude Code/Desktop, Cursor and VS Code. Then made reply-compatible with LTspice's bridge by
+  diffing ~100 calls against it (`scripts/mcp_diff.py`): JSON format, error texts, step/complex
+  shapes, SQLite DDL, attach/status. That diff also exposed zero R/C/L currents in `.ac` runs
+  (ngspice), now fixed with sense sources (16/16 Educational and 60/60 Applications `.ac`
+  examples still pass). Possible next steps: an MCP tool to place/move parts
+  through the editor instead of raw `.asc` text, and stepped runs written to `.raw` (results of
+  `.step` runs live only in memory, so a fresh headless session can't read them from disk).
+- Next from Wine: still greyed: symbol editor, buses (BUS tap), Paste, marching waveforms,
+  efficiency report/calculation, eye diagram, phase/gain-margin and step annotations, moving
+  annotations. Also Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks, the
+  bottom of the Plot Settings menu (scrolled off the 900 px Wine screen: use a taller Xephyr),
+  and checking the editing dialogs (component, analysis) against LTspice.
 
 ### 3. Remaining features
 - Symbol editor for `.asy` files (File > New Symbol, Edit > Add Pin/Port).
-- Settings: symbol/library search paths, waveform font; colour dialog that works by clicking a
-  sample schematic like LTspice's.
-- Plot settings: axis ranges and colours from `.plt`; trace-selection undo.
+- Colour dialog that works by clicking a sample schematic like LTspice's.
+- Plot settings: axis ranges and colours from `.plt`.
 - LTspice-only analysis forms: `.step` over model parameters and temperature, `.wave`, `.net`.
-- Efficiency report, PCB netlist export, `.wav` export.
+- Efficiency report, `.wav` export, more PCB netlist formats (LTspice has ~20; we write 4).
 
 ### 4. Packaging
 - Done: `.desktop` file, icon and MIME types for `.asc`/`.raw` (`scripts/install_desktop.py`).

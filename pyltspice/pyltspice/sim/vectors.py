@@ -13,6 +13,8 @@ def lt_name(ng: str) -> str | None:
     Returns None for vectors LTspice wouldn't show (internal device params)."""
     n = ng.strip()
     low = n.lower()
+    if "v__isense_" in low or re.search(r"__i[rcl][^()]*\)?$", low):
+        return None                  # AC current probes added by the runner (hidden, see rawfile)
     if low in ("time", "frequency", "v-sweep", "i-sweep", "temp-sweep", "res-sweep"):
         return n
     m = re.match(r"^v\((.*)\)$", n, re.I)
@@ -44,8 +46,10 @@ def lt_name(ng: str) -> str | None:
 class VectorSet:
     """Name lookup over one plot, by LTspice-style name (case-insensitive)."""
 
-    def __init__(self, plot):
+    def __init__(self, plot, radians=True, defs=None):
         self.plot = plot
+        self.radians = radians      # LTspice: Settings > Waveforms > Use radian measure
+        self.defs = defs            # plot.defs text: .func / .param for expressions
         self.by_name = {}
         for v in plot.variables[1:]:
             ln = lt_name(v.name)
@@ -97,6 +101,12 @@ class VectorSet:
 
     def eval(self, expr: str):
         env = dict(self._FUNCS)
+        if not self.radians:
+            d = np.pi / 180
+            env.update(sin=lambda x: np.sin(x * d), cos=lambda x: np.cos(x * d),
+                       tan=lambda x: np.tan(x * d), atan=lambda x: np.arctan(x) / d)
+        if self.defs:
+            _apply_defs(self.defs, env)
         env["time"] = env["frequency"] = self.x
         counter = [0]
 
@@ -114,6 +124,34 @@ class VectorSet:
         if re.search(r"[^\w\s+\-*/().,]", py) or "__" in py:
             raise ValueError(f"Invalid expression: {expr}")
         return eval(py, {"__builtins__": {}}, env)  # noqa: S307 - restricted namespace
+
+
+def _py_expr(text: str) -> str:
+    py = text.strip()
+    if py.startswith("{") and py.endswith("}"):
+        py = py[1:-1]
+    py = py.replace("^", "**")
+    if re.search(r"[^\w\s+\-*/().,]", py) or "__" in py:
+        raise ValueError(f"Invalid expression: {text}")
+    return py
+
+
+def _apply_defs(defs: str, env: dict):
+    """plot.defs: '.func Pythag(x,y) {sqrt(x*x+y*y)}' and '.param twopi = 2*pi' lines."""
+    env.setdefault("__builtins__", {})
+    for line in defs.splitlines():
+        line = line.split(";")[0].strip()
+        m = re.match(r"(?i)\.func\s+(\w+)\s*\(([^)]*)\)\s*=?\s*(.+)$", line)
+        try:
+            if m:
+                args = ",".join(a.strip() for a in m.group(2).split(",") if a.strip())
+                env[m.group(1)] = eval(f"lambda {args}: ({_py_expr(m.group(3))})", env)  # noqa: S307
+                continue
+            m = re.match(r"(?i)\.param\s+(\w+)\s*=?\s*(.+)$", line)
+            if m:
+                env[m.group(1)] = eval(_py_expr(m.group(2)), env)  # noqa: S307
+        except (SyntaxError, ValueError, NameError, TypeError):
+            continue
 
 
 def unit_of(name: str) -> str:

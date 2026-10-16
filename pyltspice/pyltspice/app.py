@@ -27,6 +27,13 @@ def main(argv=None):
         win.open_file(f)
     if not files:
         win.new_schematic()
+    # MCP: AI assistants attach through pyltspice-mcp (Tools > Configure Third-Party AI Assistants)
+    import os
+    if not os.environ.get("PYLTSPICE_NO_MCP"):
+        win.start_mcp_host()
+        from PySide6.QtCore import QTimer
+        from .ui.ai_dialog import offer_at_startup
+        QTimer.singleShot(500, lambda: offer_at_startup(win))
     return app.exec()
 
 

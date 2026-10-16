@@ -28,7 +28,9 @@ def main():
         cab = tmp / "cab"
         subprocess.run(["7z", "x", "-y", str(tmp / "disk1.cab"), f"-o{cab}"],
                        check=True, stdout=subprocess.DEVNULL)
-        for name in ("lib.zip", "examples.zip"):
+        for name in ("lib.zip", "examples.zip", "reference.zip"):
+            if not (cab / name).exists():
+                continue          # reference.zip (docs for AI assistants) is new in LTspice 26.1
             with zipfile.ZipFile(cab / name) as z:
                 z.extractall(args.dest)
             print(f"extracted {name}")

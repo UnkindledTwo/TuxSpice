@@ -750,7 +750,8 @@ class DrawTool(Tool):
         if len(self.pts) == need:
             coords = [v for pt in self.pts for v in pt]
             self.doc.begin()
-            self.doc.sch.items.append(asc.Graphic(self.kind, coords))
+            style = getattr(self.win.main, "line_style", 0)
+            self.doc.sch.items.append(asc.Graphic(self.kind, coords, style))
             self.doc.commit(f"Draw {self.kind.title()}", cleanup=False)
             self.pts = []
         self.win.status.emit(self.status)

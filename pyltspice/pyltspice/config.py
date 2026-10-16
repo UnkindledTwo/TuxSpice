@@ -21,3 +21,9 @@ def ngspice_path():
     if local.exists():
         return str(local)
     return shutil.which("ngspice")
+
+
+def user_background() -> Path:
+    """Settings > Operation > Background image > User supplied (LTspice: %USERPROFILE%\\LTspice.jpg)."""
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "pyltspice" / "TuxSpice.jpg"

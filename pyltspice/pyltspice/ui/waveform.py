@@ -15,11 +15,21 @@ pg.setConfigOptions(antialias=True)
 GRID_ALPHA = 0.55      # grid lines in the axis color at this alpha come out near LTspice's grey grid
 
 
+def _setting(key):
+    from .settings_dialog import get
+    return get(key)
+
+
 def plot_font():
-    """LTspice default waveform font: Arial 10 pt, bold (Settings > Waveforms)."""
-    f = QFont("Arial", 10)
-    f.setBold(True)
+    """Settings > Waveforms > Font; LTspice's default is Arial 10 pt, bold."""
+    f = QFont(_setting("waveform/font"), _setting("waveform/font_size"))
+    f.setBold(_setting("waveform/font_bold"))
     return f
+
+
+def trace_width():
+    """Settings > Waveforms > Data trace width (1 = LTspice's thin default)."""
+    return 1.2 * _setting("waveform/trace_width")
 
 
 class EngAxis(pg.AxisItem):
@@ -72,6 +82,7 @@ class Trace:
         self.expr = expr
         self.color = QColor(color)
         self.items = []
+        self.item_steps = []         # .step run of each entry in items
         self.cx = self.cy = None     # data the cursors follow (first .step run)
         self.vb = None
         self.pane = None
@@ -86,6 +97,7 @@ class Cursor:
         pen = QPen(QColor("#808080"))
         pen.setCosmetic(True)
         pen.setStyle(Qt.DashLine)
+        pen.setWidthF(_setting("waveform/cursor_width"))
         label = str(index)
         self.vline = pg.InfiniteLine(angle=90, movable=True, pen=pen,
                                      label=label, labelOpts={"position": 0.95, "color": "#000"})
@@ -213,7 +225,7 @@ class Pane(QWidget):
         self.plot.scene().sigMouseMoved.connect(self._mouse_moved)
         self.plot.setContextMenuPolicy(Qt.CustomContextMenu)
         self.plot.customContextMenuRequested.connect(lambda p: viewer.context_menu(self, self.plot.mapToGlobal(p)))
-        self.plot.scene().sigMouseClicked.connect(lambda ev: self.activated.emit(self))
+        self.plot.scene().sigMouseClicked.connect(self._clicked)
         lay.addWidget(self.plot, 1)
 
     def _ensure_right(self, unit):
@@ -246,9 +258,22 @@ class Pane(QWidget):
         xu = self.bottom.unit
         self.viewer.status.emit(f"x = {fmt(x, xu, 5)}    y = {fmt(pt.y(), self.left.unit, 5)}")
 
+    def _clicked(self, ev):
+        self.activated.emit(self)
+        if ev.button() == Qt.LeftButton and self.viewer.mode in ANNOTATIONS:
+            vb = self.plot.getPlotItem().getViewBox()
+            if vb.sceneBoundingRect().contains(ev.scenePos()):
+                self.viewer.annotation_click(self, vb.mapSceneToView(ev.scenePos()))
+                ev.accept()
+
     def _label_clicked(self, link):
         i = int(link)
         if 0 <= i < len(self.traces):
+            if self.viewer.mode == "delete":
+                self.viewer.record()
+                self.remove_trace(self.traces[i])
+                self.viewer.traces_changed.emit()
+                return
             self.viewer.trace_menu(self, self.traces[i])
 
     def refresh_labels(self):
@@ -262,27 +287,27 @@ class Pane(QWidget):
         pi = self.plot.getPlotItem()
         pen = QPen(trace.color)
         pen.setCosmetic(True)
-        pen.setWidthF(1.2)
+        pen.setWidthF(trace_width())
         a0, b0 = steps[0]
         trace.cx = x[a0:b0]
         trace.cy = (20 * np.log10(np.maximum(np.abs(y[a0:b0]), 1e-300)) if self.viewer.is_ac
                     else np.real(y[a0:b0]))
         trace.pane = self
-        for a, b in steps:
+        for k, (a, b) in enumerate(steps):
             xs = x[a:b]
+            n_before = len(trace.items)
             if self.viewer.is_ac:
                 z = y[a:b]
                 mag = 20 * np.log10(np.maximum(np.abs(z), 1e-300))
                 item = pi.plot(xs, mag, pen=pen)
                 trace.items.append((pi, item))
-                if not self.viewer.show_phase:
-                    continue
-                ph = np.degrees(np.unwrap(np.angle(z)))
-                dpen = QPen(pen)
-                dpen.setStyle(Qt.DashLine)
-                pitem = pg.PlotCurveItem(np.log10(xs), ph, pen=dpen)
-                self.phase_vb.addItem(pitem)
-                trace.items.append((self.phase_vb, pitem))
+                if self.viewer.show_phase:
+                    ph = np.degrees(np.unwrap(np.angle(z)))
+                    dpen = QPen(pen)
+                    dpen.setStyle(Qt.DashLine)
+                    pitem = pg.PlotCurveItem(np.log10(xs), ph, pen=dpen)
+                    self.phase_vb.addItem(pitem)
+                    trace.items.append((self.phase_vb, pitem))
             else:
                 ys = np.real(y[a:b])
                 unit = unit_of(trace.expr)
@@ -300,11 +325,20 @@ class Pane(QWidget):
                     self.phase_vb.addItem(item)
                     trace.items.append((self.phase_vb, item))
                     trace.vb = self.phase_vb
+            trace.item_steps += [k] * (len(trace.items) - n_before)
+            for _, it in trace.items[n_before:]:
+                it.setVisible(self.viewer.visible_steps is None or k in self.viewer.visible_steps)
+                if self.viewer.mark_points and hasattr(it, "setSymbol"):
+                    it.setSymbol("o")
+                    it.setSymbolSize(4)
+                    it.setSymbolPen(trace.color)
+                    it.setSymbolBrush(trace.color)
         if self.viewer.is_ac:
             trace.vb = pi.getViewBox()
         self.traces.append(trace)
         self.refresh_labels()
-        self.autorange()
+        if self.viewer.autoranging:
+            self.autorange()
 
     def remove_trace(self, trace):
         self.viewer.detach_cursors(trace)
@@ -327,7 +361,10 @@ class WaveformViewer(QWidget):
     def __init__(self, plot, title="", parent=None):
         super().__init__(parent)
         self.plot = plot
-        self.vectors = VectorSet(plot)
+        from .settings_dialog import plot_defs_path
+        defs = plot_defs_path()
+        self.vectors = VectorSet(plot, radians=_setting("waveform/radians"),
+                                 defs=defs.read_text(errors="replace") if defs.is_file() else None)
         self.title = title
         self.analysis = plot.analysis
         self.is_ac = plot.is_complex
@@ -338,6 +375,17 @@ class WaveformViewer(QWidget):
         self.cursors = []
         self.readout = None
         self.show_grid = False      # LTspice: Plot Settings > Grid is off by default
+        self.sync_x = True          # Plot Settings > Sync. Horiz. Axes
+        self.mark_points = False
+        self.autoranging = True
+        self.visible_steps = None   # None: all .step runs
+        self.mode = None            # 'delete' or an annotation kind
+        self.menu_provider = None   # main window's right-click menu
+        self.plt_path = None        # plot settings file last loaded or saved
+        self.annotations = []
+        self.annot_color = QColor("#ffffff")
+        self._anno_start = None
+        self._undo, self._redo, self._quiet = [], [], False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.split = QSplitter(Qt.Vertical)
@@ -354,7 +402,7 @@ class WaveformViewer(QWidget):
     def add_pane(self):
         p = Pane(self)
         p.activated.connect(self._set_active)
-        if self.panes:
+        if self.panes and self.sync_x:
             p.plot.setXLink(self.panes[0].plot)
         self.panes.append(p)
         self.split.addWidget(p)
@@ -367,7 +415,9 @@ class WaveformViewer(QWidget):
             p.plot.showGrid(x=on, y=on, alpha=GRID_ALPHA)
 
     def _set_active(self, pane):
-        self.active = pane
+        if self.active is not pane:
+            self.active = pane
+            self.traces_changed.emit()        # pane up/down, delete pane... depend on it
 
     def next_color(self):
         c = TRACE_COLORS[self.color_i % len(TRACE_COLORS)]
@@ -390,6 +440,7 @@ class WaveformViewer(QWidget):
             return str(e)
         y = np.broadcast_to(np.asarray(y), self.x.shape)
         pane = pane or self.active or self.panes[0]
+        self.record()
         pane.add_trace(Trace(expr, self.next_color()), self.x, y, self.steps())
         self.traces_changed.emit()
         return ""
@@ -443,6 +494,12 @@ class WaveformViewer(QWidget):
     # -- menus
     def context_menu(self, pane, global_pos):
         self.active = pane
+        if self.mode is not None:          # right-click ends a mode, as in LTspice
+            self.end_mode()
+            return
+        if self.menu_provider is not None:
+            self.menu_provider(global_pos)
+            return
         m = QMenu(self)
         m.addAction("Add Traces", lambda: self.add_traces_dialog(pane))
         m.addAction("Delete Traces", lambda: self._delete_all(pane))
@@ -468,12 +525,16 @@ class WaveformViewer(QWidget):
             self.readout = CursorReadout(self)
         self.update_readout()
         self.readout.show()
+        self.traces_changed.emit()
 
     def detach_cursor(self, index):
-        for c in [c for c in self.cursors if c.index == index]:
+        gone = [c for c in self.cursors if c.index == index]
+        for c in gone:
             c.remove()
             self.cursors.remove(c)
         self.update_readout()
+        if gone:
+            self.traces_changed.emit()
 
     def detach_cursors(self, trace):
         for c in [c for c in self.cursors if c.trace is trace]:
@@ -520,6 +581,7 @@ class WaveformViewer(QWidget):
         return f"Average: {fmt(avg, u, 5)}   RMS: {fmt(rms, u, 5)}"
 
     def _delete_all(self, pane):
+        self.record()
         for t in list(pane.traces):
             pane.remove_trace(t)
         self.traces_changed.emit()
@@ -527,6 +589,7 @@ class WaveformViewer(QWidget):
     def delete_pane(self, pane):
         if len(self.panes) <= 1:
             return
+        self.record()
         self.panes.remove(pane)
         pane.setParent(None)
         pane.deleteLater()
@@ -543,6 +606,316 @@ class WaveformViewer(QWidget):
                 err = self.add_trace(expr, pane)
                 if err:
                     self.status.emit(err)
+
+    # -- Plot Settings commands (LTspice 26 menu)
+    def record(self):
+        """Remember the trace layout for Plot Settings > Undo."""
+        if self._quiet:
+            return
+        self._undo.append(self.layout())
+        del self._undo[:-50]
+        self._redo.clear()
+
+    def can_undo(self):
+        return bool(self._undo)
+
+    def can_redo(self):
+        return bool(self._redo)
+
+    def _restore(self, layout):
+        self._quiet = True
+        try:
+            self.clear_panes()
+            self.apply_layout(layout)
+        finally:
+            self._quiet = False
+        self.traces_changed.emit()
+
+    def undo(self):
+        if self._undo:
+            self._redo.append(self.layout())
+            self._restore(self._undo.pop())
+
+    def redo(self):
+        if self._redo:
+            self._undo.append(self.layout())
+            self._restore(self._redo.pop())
+
+    def clear_panes(self):
+        """Back to one empty pane."""
+        for c in list(self.cursors):
+            self.detach_cursor(c.index)
+        for p in self.panes[1:]:
+            p.setParent(None)
+            p.deleteLater()
+        self.panes = self.panes[:1]
+        self.active = self.panes[0]
+        for t in list(self.panes[0].traces):
+            self.panes[0].remove_trace(t)
+
+    def start_delete_mode(self):
+        self.mode = "delete"
+        self.traces_changed.emit()
+        self.setCursor(icons_cursor("scissors"))
+        self.status.emit("Click on a trace label to delete it.  Right-click or Esc to quit.")
+
+    def end_mode(self):
+        self.mode = None
+        self._anno_start = None
+        self.unsetCursor()
+        self.traces_changed.emit()
+        self.status.emit("")
+
+    def place_cursor(self):
+        """Plot Settings > Place Cursor on Active Trace: cursor 1, then cursor 2."""
+        pane = self.active if self.active in self.panes and self.active.traces else \
+            next((p for p in self.panes if p.traces), None)
+        if pane is None:
+            return
+        have = {c.index for c in self.cursors}
+        self.attach_cursor(pane.traces[0], 1 if 1 not in have else 2)
+
+    def clear_cursors(self):
+        if self.mode is not None:
+            self.end_mode()
+        for i in (1, 2):
+            self.detach_cursor(i)
+
+    def redraw(self):
+        for p in self.panes:
+            p.plot.update()
+            p.refresh_labels()
+        self.update()
+
+    def add_pane_at(self, above=True):
+        self.record()
+        i = self.panes.index(self.active) if self.active in self.panes else len(self.panes) - 1
+        p = self.add_pane()
+        self.panes.remove(p)
+        at = i if above else i + 1
+        self.panes.insert(at, p)
+        self.split.insertWidget(at, p)
+        self.active = p
+        self.traces_changed.emit()
+
+    def move_active_pane(self, d):
+        if self.active not in self.panes:
+            return
+        i = self.panes.index(self.active)
+        j = i + d
+        if not 0 <= j < len(self.panes):
+            return
+        self.record()
+        self.panes.insert(j, self.panes.pop(i))
+        self.split.insertWidget(j, self.active)
+        self.traces_changed.emit()
+
+    def set_sync_x(self, on):
+        self.sync_x = on
+        first = self.panes[0].plot
+        for p in self.panes[1:]:
+            p.plot.setXLink(first if on else None)
+
+    def reset_colors(self):
+        self.color_i = 0
+        for p in self.panes:
+            for t in p.traces:
+                t.color = QColor(self.next_color())
+                for _, it in t.items:
+                    pen = QPen(it.opts["pen"]) if hasattr(it, "opts") and "pen" in it.opts else QPen()
+                    pen.setColor(t.color)
+                    it.setPen(pen)
+            p.refresh_labels()
+
+    def set_mark_points(self, on):
+        self.mark_points = on
+        for p in self.panes:
+            for t in p.traces:
+                for _, it in t.items:
+                    if hasattr(it, "setSymbol"):
+                        it.setSymbol("o" if on else None)
+                        it.setSymbolSize(4)
+                        it.setSymbolPen(t.color)
+                        it.setSymbolBrush(t.color)
+
+    def select_steps_dialog(self):
+        """Plot Settings > Select Steps: choose which .step runs are drawn."""
+        steps = self.steps()
+        labels = list(self.plot.step_labels) or [f"Step {i + 1}" for i in range(len(steps))]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Steps")
+        lay = QVBoxLayout(dlg)
+        lst = QListWidget()
+        from PySide6.QtWidgets import QListWidgetItem
+        for i, lab in enumerate(labels):
+            it = QListWidgetItem(lab or f"Step {i + 1}")
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if self.visible_steps is None or i in self.visible_steps else Qt.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        on = {i for i in range(lst.count()) if lst.item(i).checkState() == Qt.Checked}
+        self.set_visible_steps(None if len(on) == lst.count() else on)
+
+    def set_visible_steps(self, steps):
+        self.visible_steps = steps
+        for p in self.panes:
+            for t in p.traces:
+                for (_, it), k in zip(t.items, t.item_steps):
+                    it.setVisible(steps is None or k in steps)
+
+    def manual_limits_dialog(self):
+        """Plot Settings > Manual Limits for the active pane."""
+        pane = self.active if self.active in self.panes else self.panes[0]
+        vb = pane.plot.getPlotItem().getViewBox()
+        (x0, x1), (y0, y1) = vb.viewRange()
+        if self.is_ac:
+            x0, x1 = 10 ** x0, 10 ** x1
+        xu, yu = pane.bottom.unit, pane.left.unit
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Manual Limits")
+        from PySide6.QtWidgets import QFormLayout
+        form = QFormLayout(dlg)
+        edits = {}
+        for key, label, val, u in (("x0", "Horizontal Left:", x0, xu), ("x1", "Horizontal Right:", x1, xu),
+                                   ("y1", "Vertical Top:", y1, yu), ("y0", "Vertical Bottom:", y0, yu)):
+            e = QLineEdit(fmt(val, u, 5))
+            edits[key] = e
+            form.addRow(label, e)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        from ..sim.spicenum import parse
+        v = {k: parse(e.text().strip().rstrip("sVAdBHz°")) for k, e in edits.items()}
+        if any(x is None for x in v.values()):
+            self.status.emit("Manual Limits: not a number")
+            return
+        if self.is_ac:
+            if v["x0"] <= 0 or v["x1"] <= 0:
+                return
+            v["x0"], v["x1"] = np.log10(v["x0"]), np.log10(v["x1"])
+        self.autoranging = False
+        vb.setRange(xRange=(v["x0"], v["x1"]), yRange=(v["y0"], v["y1"]), padding=0)
+
+    def recenter(self):
+        """View > Recenter: put the middle of the data in the middle, keeping the zoom."""
+        lo, hi = float(np.min(np.real(self.x))), float(np.max(np.real(self.x)))
+        if self.is_ac and lo > 0:
+            lo, hi = np.log10(lo), np.log10(hi)
+        vb = self.panes[0].plot.getPlotItem().getViewBox()
+        (x0, x1), _ = vb.viewRange()
+        mid, half = (lo + hi) / 2, (x1 - x0) / 2
+        vb.setXRange(mid - half, mid + half, padding=0)
+
+    # -- Notes & Annotations
+    def start_annotation(self, kind):
+        self.mode = kind
+        self._anno_start = None
+        self.setCursor(Qt.CrossCursor)
+        self.traces_changed.emit()
+        what = {"text": "Click where the text goes.", "arrow": "Click the tail, then the head of the arrow.",
+                "line": "Click the two ends of the line.", "rect": "Click two corners of the rectangle.",
+                "ellipse": "Click two corners of the ellipse's bounding box."}[kind]
+        self.status.emit(what + "  Right-click to quit.")
+
+    def annotation_click(self, pane, pt):
+        from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem, QInputDialog
+        vb = pane.plot.getPlotItem().getViewBox()
+        pen = QPen(self.annot_color)
+        pen.setCosmetic(True)
+        pen.setWidthF(1.5)
+        if self.mode == "text":
+            text, ok = QInputDialog.getText(self, "Text", "Enter text:")
+            if ok and text:
+                self._add_text(pane, pt.x(), pt.y(), text)
+            return
+        if self._anno_start is None:
+            self._anno_start = (pane, pt)
+            return
+        _, p0 = self._anno_start
+        self._anno_start = None
+        if self.mode in ("line", "arrow"):
+            item = pg.PlotCurveItem([p0.x(), pt.x()], [p0.y(), pt.y()], pen=pen)
+            vb.addItem(item, ignoreBounds=True)
+            self.annotations.append((vb, item))
+            if self.mode == "arrow":
+                # pyqtgraph arrows point along -angle in screen space; aim from tail to head
+                a, b = vb.mapViewToScene(p0), vb.mapViewToScene(pt)
+                import math
+                ang = math.degrees(math.atan2(b.y() - a.y(), b.x() - a.x())) + 180
+                head = pg.ArrowItem(pos=(pt.x(), pt.y()), angle=ang, headLen=12, pen=pen,
+                                    brush=self.annot_color)
+                vb.addItem(head, ignoreBounds=True)
+                self.annotations.append((vb, head))
+        else:
+            x0, x1 = sorted((p0.x(), pt.x()))
+            y0, y1 = sorted((p0.y(), pt.y()))
+            cls = QGraphicsRectItem if self.mode == "rect" else QGraphicsEllipseItem
+            item = cls(x0, y0, x1 - x0, y1 - y0)
+            item.setPen(pen)
+            vb.addItem(item, ignoreBounds=True)
+            self.annotations.append((vb, item))
+
+    def _add_text(self, pane, x, y, text):
+        vb = pane.plot.getPlotItem().getViewBox()
+        item = pg.TextItem(text, color=self.annot_color, anchor=(0, 1))
+        item.setFont(plot_font())
+        item.setPos(x, y)
+        vb.addItem(item, ignoreBounds=True)
+        self.annotations.append((vb, item))
+
+    def annotate_cursor(self):
+        """Notes & Annotations > Cursor Position: label cursor 1 with its coordinates."""
+        if not self.cursors:
+            return
+        c = min(self.cursors, key=lambda c: c.index)
+        xu = "Hz" if self.is_ac else ("s" if self.analysis == "tran" else "V")
+        yu = "dB" if self.is_ac else unit_of(c.trace.expr)
+        pane = c.trace.pane
+        x = np.log10(c.x) if self.is_ac else c.x
+        self._add_text(pane, x, c.y, f"({fmt(c.x, xu, 5)}, {fmt(c.y, yu, 5)})")
+
+    def annotation_style_dialog(self):
+        from PySide6.QtWidgets import QColorDialog
+        col = QColorDialog.getColor(self.annot_color, self, "Line Style/Color")
+        if col.isValid():
+            self.annot_color = col
+
+    def apply_settings(self):
+        """Settings > Waveforms changed: trace width, font, radians."""
+        self.vectors.radians = _setting("waveform/radians")
+        for p in self.panes:
+            for ax in (p.bottom, p.left, p.right):
+                if ax is not None:
+                    ax.setStyle(tickFont=plot_font())
+            p.labels.setFont(plot_font())
+            for t in p.traces:
+                for _, it in t.items:
+                    if hasattr(it, "opts") and "pen" in it.opts:
+                        pen = QPen(it.opts["pen"])
+                        pen.setWidthF(trace_width())
+                        it.setPen(pen)
+        self.redraw()
+
+
+def icons_cursor(name):
+    from .icons import make_cursors
+    global _CURSORS
+    if _CURSORS is None:
+        _CURSORS = make_cursors()
+    return _CURSORS.get(name, Qt.ArrowCursor)
+
+
+_CURSORS = None
+ANNOTATIONS = ("text", "arrow", "line", "rect", "ellipse")
 
 
 class AddTracesDialog(QDialog):

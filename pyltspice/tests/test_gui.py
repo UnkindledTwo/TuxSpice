@@ -373,3 +373,115 @@ def test_pz_and_disto_results_shown(qapp, tmp_path):
     assert all(isinstance(pw, PlotWindow) for pw in pws)
     sw.doc.undo.setClean()
     win.close()
+
+
+def _tran_plot():
+    import numpy as np
+    from pyltspice.sim.rawfile import Plot, Variable
+    t = np.linspace(0, 1e-3, 50)
+    return Plot(title="t", plotname="Transient Analysis", flags={"real"},
+                variables=[Variable(0, "time", "time"), Variable(1, "V(a)", "voltage"),
+                           Variable(2, "V(b)", "voltage")],
+                data=np.array([t, np.sin(t * 1e4), np.cos(t * 1e4)]))
+
+
+def test_ltspice26_menu_bars(qapp):
+    """Three menu bars as in LTspice 26: nothing open, schematic, waveform."""
+    from pyltspice.ui.main_window import MainWindow, PlotWindow
+    win = MainWindow()
+    win.show()
+    shown = lambda kind: [m.title().replace("&", "") for m in win.menu_sets[kind] if m.menuAction().isVisible()]
+    assert shown("empty") == ["File", "View", "Tools", "Help"]
+    win.new_schematic()
+    qapp.processEvents()
+    assert shown("schematic") == ["File", "Edit", "Hierarchy", "View", "Simulate", "Tools", "Window", "Help"]
+    sw = win.schematic()
+    pw = PlotWindow(win._new_viewer(_tran_plot(), "t.raw"), sw)
+    win._add_window(pw, "t.raw")
+    qapp.processEvents()
+    assert shown("waveform") == ["File", "View", "Plot Settings", "Simulation", "Tools", "Window", "Help"]
+    # plot-only commands are off for schematics and vice versa, so shared keys never clash
+    assert win.actions["plot_add_trace"].isEnabled() and not win.actions["sim_edit_cmd"].isEnabled()
+    sw.doc.undo.setClean()
+    win.close()
+
+
+def test_shared_keys_follow_active_window(qapp):
+    """C places a capacitor on a schematic but a cursor on a plot; Esc clears cursors;
+    P/D add and move panes; Ctrl+Z undoes trace changes (Plot Settings > Undo)."""
+    from pyltspice.ui.main_window import MainWindow, PlotWindow
+    win = MainWindow()
+    win.resize(1000, 800)
+    win.show()
+    win.new_schematic()
+    sw = win.schematic()
+    qapp.processEvents()
+    QTest.keyClick(sw.view, Qt.Key_C)
+    assert type(sw.tool).__name__ == "PlaceTool"
+    sw.set_tool(None)
+    v = win._new_viewer(_tran_plot(), "t.raw")
+    v.add_trace("V(a)")
+    win._add_window(PlotWindow(v, sw), "t.raw")
+    qapp.processEvents()
+    target = v.panes[0].plot
+    QTest.keyClick(target, Qt.Key_C)
+    assert len(v.cursors) == 1
+    QTest.keyClick(target, Qt.Key_Escape)
+    assert not v.cursors
+    QTest.keyClick(target, Qt.Key_P)                 # new pane above the active one
+    assert len(v.panes) == 2 and v.panes.index(v.active) == 0
+    v.add_trace("V(b)")
+    QTest.keyClick(target, Qt.Key_D)                 # move it below
+    assert v.layout() == [["V(a)"], ["V(b)"]]
+    QTest.keyClick(target, Qt.Key_Z, Qt.ControlModifier)
+    assert v.layout() == [["V(b)"], ["V(a)"]]
+    QTest.keyClick(target, Qt.Key_Z, Qt.ControlModifier | Qt.ShiftModifier)
+    assert v.layout() == [["V(a)"], ["V(b)"]]
+    QTest.keyClick(target, Qt.Key_Delete)            # delete mode: click a label to remove it
+    assert v.mode == "delete"
+    v.panes[1]._label_clicked("0")
+    assert v.layout() == [["V(a)"], []]
+    sw.doc.undo.setClean()
+    win.close()
+
+
+def test_settings_remembered_only_when_starred(qapp):
+    """Like LTspice, only [*] settings persist; SPICE tolerances last for the session."""
+    from pyltspice.ui import settings_dialog as sd
+    sd.put("spice/reltol", "0.002")              # not [*]
+    sd.put("spice/trtol", "7")                   # [*]
+    assert sd.get("spice/reltol") == "0.002"
+    assert sd._settings().value("spice/reltol") is None
+    assert sd._settings().value("spice/trtol") == "7"
+    sd.put("spice/method", "Gear")
+    assert sd.spice_options() == ".options method=gear reltol=0.002 trtol=7"
+    for k in ("spice/reltol", "spice/trtol", "spice/method"):
+        sd.put(k, sd.DEFAULTS[k])
+    assert sd.spice_options() == ""
+    dlg = sd.SettingsDialog(None, "Hacks")
+    assert dlg.tabs.tabText(dlg.tabs.currentIndex()) == "Hacks" and dlg.tabs.count() == 10
+    _dispose(dlg)
+
+
+def test_waveform_expressions_degrees_and_plot_defs():
+    from pyltspice.sim.vectors import VectorSet
+    plot = _tran_plot()
+    v = VectorSet(plot, radians=False, defs=".func Pythag(x,y) {sqrt(x*x+y*y)}\n.param twopi = 2*pi\n")
+    assert abs(v.eval("sin(90)") - 1) < 1e-12           # Settings > Waveforms: radians off
+    assert abs(v.eval("Pythag(3,4)") - 5) < 1e-12
+    assert abs(v.eval("twopi") - 6.283185307) < 1e-6
+    assert abs(VectorSet(plot).eval("sin(90)") - 0.8939966636) < 1e-9
+
+
+@needs_lib
+def test_subckt_and_pcb_netlists():
+    from pyltspice.model.netlist import subckt_netlist
+    from pyltspice.model.pcbnetlist import export
+    sch = asc.parse_asc("Version 4\nSHEET 1 880 680\nWIRE 0 0 0 16\nWIRE 0 96 0 128\n"
+                        "FLAG 0 0 in\nIOPIN 0 0 In\nFLAG 0 128 0\n"
+                        "SYMBOL res -16 0 R0\nSYMATTR InstName R1\nSYMATTR Value 1k\n"
+                        "TEXT 0 200 Left 2 !.tran 1m\n")
+    text, _ = subckt_netlist(sch, name="blk")
+    assert ".subckt blk in" in text and "R1 in 0 1k" in text and ".tran" not in text
+    tango = export(sch, fmt="Tango")
+    assert "[\nR1\nres\n1k" in tango and "(\nin\nR1-1\n)" in tango

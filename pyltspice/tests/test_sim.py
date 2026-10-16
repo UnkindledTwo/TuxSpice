@@ -1,3 +1,4 @@
+import pytest
 import math
 
 import numpy as np
@@ -265,3 +266,22 @@ def test_distortion_two_harmonics(tmp_path):
     sets = [p for p in r.plots if p.analysis == "disto"]
     assert [s.plotname.split("-")[-1].strip() for s in sets] == ["2nd harmonic", "3rd harmonic"]
     assert sets[0].variables[0].name == "frequency" and sets[0].is_complex
+
+
+@needs_ngspice
+def test_ac_device_currents_match_ltspice(tmp_path):
+    """ngspice leaves @r1[i] at zero in .ac; TuxSpice adds sense sources so I(R1) is right.
+    LTspice 26.1.1 gives -84.0535 dB / -93.595 deg for this circuit at 10 Hz."""
+    import numpy as np
+    from pyltspice.sim.rawfile import read_raw
+    from pyltspice.sim.runner import Simulator
+    from pyltspice.sim.vectors import VectorSet
+    res = Simulator("* rc\nV1 N001 0 AC 1\nR1 out N001 1k\nC1 out 0 1u\n.ac dec 5 10 100k\n.end\n",
+                    tmp_path / "ac").run()
+    for plot in (res.main_plot(), read_raw(tmp_path / "ac.raw")[0]):
+        vs = VectorSet(plot)
+        assert "V(out__ir1)" not in vs.names() and not any("isense" in n.lower() for n in vs.names())
+        i = vs.get("I(R1)")[0]
+        assert 20 * np.log10(abs(i)) == pytest.approx(-84.0535, abs=1e-3)
+        assert np.degrees(np.angle(i)) == pytest.approx(-93.595, abs=1e-2)
+        assert np.allclose(vs.get("I(C1)"), -vs.get("I(R1)"))

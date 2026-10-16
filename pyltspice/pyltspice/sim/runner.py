@@ -45,6 +45,37 @@ _NONCONVERGENCE = ("timestep too small", "gmin stepping failed", "source steppin
                    "could not be simulated", "no convergence")
 
 
+SENSE = "v__isense_"         # 0 V sources measuring R/C/L currents in .ac runs (see rawfile)
+
+
+def add_ac_current_probes(text: str) -> str:
+    """ngspice leaves @r1[i]/@c1[i]/@l1[i] at zero in AC analysis, but LTspice plots I(R1) there.
+    For a netlist with .ac, put a 0 V source in series with each top-level R, C and L (at its first
+    pin, so the current has LTspice's polarity); rawfile turns those back into I(R1)."""
+    lines = text.splitlines()
+    if not any(re.match(r"(?i)\s*\.ac\b", l) for l in lines):
+        return text
+    out, depth, extra = [], 0, []
+    for l in lines:
+        s = l.lstrip().lower()
+        if s.startswith(".subckt"):
+            depth += 1
+        elif s.startswith(".ends"):
+            depth = max(0, depth - 1)
+        elif depth == 0 and s[:1] in ("r", "c", "l"):
+            tok = l.split()
+            if len(tok) >= 3 and re.match(r"^[A-Za-z][\w.$#]*$", tok[0]) and not tok[0].startswith(("l_", "r_")):
+                name = tok[0].lower()
+                node = f"{tok[1]}__i{name}"
+                extra.append(f"{SENSE}{name} {tok[1]} {node} 0")
+                l = re.sub(r"^(\s*\S+\s+)\S+", lambda m: m.group(1) + node, l, count=1)
+        out.append(l)
+    if not extra:
+        return text
+    end = next((i for i in range(len(out) - 1, -1, -1) if out[i].strip().lower() == ".end"), len(out))
+    return "\n".join(out[:end] + extra + out[end:]) + "\n"
+
+
 def _with_options(text: str, opt: str) -> str:
     lines = text.rstrip().splitlines()
     if lines and lines[-1].strip().lower() == ".end":
@@ -86,6 +117,34 @@ def _apply_step(text: str, spec: ltcompat.StepSpec, value: float) -> str:
             line = " ".join(tok[:3] + [val] + rest)
         out.append(line)
     return "\n".join(out) + "\n"
+
+
+def _dc_sweep_plot(runs, combos, tr) -> Plot:
+    """Merge the .op runs of a '.dc dec/oct/list' sweep into one DC plot (x = v-sweep or
+    i-sweep, like ngspice's own .dc), one stepped segment per outer .step value."""
+    import numpy as np
+    from .rawfile import Variable
+    src = tr.dc_sweep.name
+    xname = "i-sweep" if src[:1].lower() == "i" else "v-sweep"
+    ops = [next(p for p in r if p.data is not None) for r in runs]
+    base = ops[0]
+    variables = [Variable(0, xname, "current" if xname[0] == "i" else "voltage")] + \
+        [Variable(v.index + 1, v.name, v.kind) for v in base.variables]
+    cols = []
+    for combo, op in zip(combos, ops):
+        col = [combo[-1]] + [op.data[op.index_of(v.name)][0] if op.index_of(v.name) is not None
+                             else np.nan for v in base.variables]
+        cols.append(col)
+    data = np.array(cols, dtype=float).T
+    plot = Plot(base.title, "DC transfer characteristic", {"real"}, variables)
+    plot.data = data
+    n = len(tr.dc_sweep.values)
+    if tr.steps:
+        plot.flags.add("stepped")
+        plot.step_bounds = [(k, k + n) for k in range(0, len(combos), n)]
+        plot.step_labels = [" ".join(f"{s.name}={spicenum.fmt(v)}" for s, v in zip(tr.steps, combos[k]))
+                            for k in range(0, len(combos), n)]
+    return plot
 
 
 def parse_measurements(log: str):
@@ -162,11 +221,13 @@ class Simulator:
         with tempfile.TemporaryDirectory(prefix="pyltspice-") as tmp:
             work = Path(tmp)
             (work / ".spiceinit").write_text(SPICEINIT)
-            combos = list(itertools.product(*[s.values for s in tr.steps])) if tr.steps else [()]
+            steps = tr.steps + ([tr.dc_sweep] if tr.dc_sweep else [])
+            combos = list(itertools.product(*[s.values for s in steps])) if steps else [()]
             runs, logs, labels = [], [], []
+            base_text = add_ac_current_probes(tr.text)
             for n, combo in enumerate(combos):
-                text = tr.text
-                for spec, val in zip(tr.steps, combo):
+                text = base_text
+                for spec, val in zip(steps, combo):
                     text = _apply_step(text, spec, val)
                 plots, log, raw = self._run_once(text, work, str(n))
                 for opt in CONVERGENCE_RETRIES:
@@ -180,7 +241,7 @@ class Simulator:
                         res.warnings.append(f"Converged only with relaxed settings: {opt}")
                         log = log2 if plots else log
                         break
-                label = " ".join(f"{s.name}={spicenum.fmt(v)}" for s, v in zip(tr.steps, combo))
+                label = " ".join(f"{s.name}={spicenum.fmt(v)}" for s, v in zip(steps, combo))
                 logs.append((f"Step {n + 1}/{len(combos)}: {label}\n" if label else "") + log)
                 labels.append(label)
                 errs = _error_lines(log)
@@ -192,7 +253,11 @@ class Simulator:
                     res.errors += errs or ["ngspice produced no output"]
                     break
             res.log = "\n".join(logs)
-            if runs and all(runs) and len(runs) == len(combos):
+            if runs and all(runs) and len(runs) == len(combos) and tr.dc_sweep:
+                res.plots = [_dc_sweep_plot(runs, combos, tr)]
+                res.ok = True
+                res.raw_path = None
+            elif runs and all(runs) and len(runs) == len(combos):
                 if len(runs) == 1:
                     res.plots = runs[0]
                 else:

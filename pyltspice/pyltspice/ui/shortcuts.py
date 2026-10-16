@@ -32,7 +32,8 @@ class ShortcutDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
         self.actions = actions
-        self.keys = [k for k in actions if not actions[k].isCheckable() or k.startswith("view_")]
+        self.keys = [k for k in actions if (not actions[k].isCheckable() or k.startswith("view_"))
+                     and not k.startswith("ctx_") and getattr(actions[k], "on", "any") != "never"]
         self.current = {k: [s.toString() for s in actions[k].shortcuts()] for k in self.keys}
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("Click a command, then press the key combination for it. "
@@ -63,7 +64,7 @@ class ShortcutDialog(QDialog):
 
     def _fill(self):
         for r, k in enumerate(self.keys):
-            self.table.setItem(r, 0, QTableWidgetItem(self.actions[k].text().replace("&", "")))
+            self.table.setItem(r, 0, QTableWidgetItem(self.actions[k].text().split("\t")[0].replace("&", "")))
             self.table.setItem(r, 1, QTableWidgetItem(", ".join(self.current[k])))
 
     def eventFilter(self, obj, ev):

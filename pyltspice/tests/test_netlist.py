@@ -116,3 +116,18 @@ def test_library_symbol_is_not_hierarchical():
     from pyltspice.model.asc import load_asc
     t = generate_netlist(load_asc(config.EXAMPLES_DIR / "Educational" / "opamp.asc")).text
     assert ".subckt" not in t.lower()
+
+
+@needs_lib
+def test_order_gaps_and_value_parameters():
+    """ADG919's symbol skips SpiceOrder 6-7 of an 8-port subckt; LTC1068-200 keeps its
+    parameters (Fclk=...) in Value while SpiceModel names the subckt."""
+    from pyltspice.model.asc import Schematic, SymbolInst
+    from pyltspice.model.netlist import generate_netlist
+    sch = Schematic(items=[SymbolInst("ADG919", 0, 0, "R0", {}, {"InstName": "U1"}),
+                           SymbolInst("LTC1068-200", 400, 0, "R0", {}, {"InstName": "U2"})])
+    lines = generate_netlist(sch).text.splitlines()
+    u1 = next(l for l in lines if l.startswith("XU1")).split()
+    assert len(u1) == 1 + 8 + 1 and u1[6:8] == ["NC_U1_6", "NC_U1_7"]
+    u2 = next(l for l in lines if l.startswith("XU2"))
+    assert u2.split()[-1] == "Fclk=500K" and "LTC1068-200" in u2

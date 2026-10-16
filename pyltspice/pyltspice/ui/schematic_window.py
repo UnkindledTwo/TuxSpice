@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtWidgets import QDialog, QInputDialog, QMenu, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget
 
 from ..model import asc
 from ..model.asy import WINDOW_ATTR
@@ -30,11 +30,14 @@ class SchematicWindow(QWidget):
         self.view.show_grid = get("view/grid")
         self.view.reverse_wheel = get("drafting/reverse_wheel")
         self.view.mark_unconnected = get("drafting/mark_unconnected")
+        self.view.mark_anchors = get("view/mark_anchors")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.view)
         self.tool = None
         self.sim_plot = None          # rawfile.Plot of the last run
+        self.probe_ref = None         # View > Set Probe Reference: voltages are probed against it
+        self._pick_ref = False
         self.set_tool(None)
         doc.changed.connect(self.title_changed)
         doc.undo.cleanChanged.connect(lambda _: self.title_changed.emit())
@@ -253,16 +256,8 @@ class SchematicWindow(QWidget):
             self.doc.abort()
 
     def context_menu(self, global_pos):
-        m = QMenu(self)
-        a = self.main.actions
-        for key in ("edit_component", "edit_wire", "edit_label", "edit_ground", "edit_text",
-                    "edit_directive", None, "edit_delete", "edit_duplicate", "edit_move",
-                    "edit_drag", None, "sim_edit_cmd", "sim_run", None, "view_fit"):
-            if key is None:
-                m.addSeparator()
-            elif key in a:
-                m.addAction(a[key])
-        m.exec(global_pos)
+        """Right-click on empty paper: LTspice's schematic menu (see ui/menus.py)."""
+        self.main.context_menu("schematic", global_pos)
 
     # -- hierarchy
     def descend(self, inst):
@@ -278,7 +273,23 @@ class SchematicWindow(QWidget):
     def probe_active(self):
         return self.sim_plot is not None
 
+    def pick_probe_reference(self):
+        self._pick_ref = True
+        self.status.emit("Click on the node to use as the probe reference (ground resets it).")
+
     def probe(self, pos, objs, alt=False):
+        if self._pick_ref:
+            self._pick_ref = False
+            ref, self.probe_ref = self.probe_ref, None
+            expr = self.probe_expr(pos, objs)
+            self.probe_ref = ref
+            if expr and expr.upper().startswith("V(") and "," not in expr:
+                self.probe_ref = expr[2:-1]
+                self.status.emit(f"Probe reference: {self.probe_ref}")
+            else:
+                self.probe_ref = None
+                self.status.emit("Probe reference: ground")
+            return
         expr = self.probe_expr(pos, objs, alt)
         if expr:
             self.probed.emit(expr)
@@ -351,4 +362,6 @@ class SchematicWindow(QWidget):
                         break
             if net and net != "0":
                 expr = f"V({net})"
+                if self.probe_ref and self.probe_ref.lower() != net.lower():
+                    expr = f"V({net},{self.probe_ref})"
         return expr

@@ -17,8 +17,17 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   net labels, ground and I/O ports. All 4,365 bundled example schematics round-trip byte for byte,
   so files saved here still open in LTspice.
 - **Looks and feels like LTspice 26** (checked side by side against LTspice running under Wine):
-  its default colors and fonts, toolbar order and redrawn icons, menus that switch between
-  schematic and waveform windows, window tabs, mode cursors, status-bar hints and dialog layouts.
+  its default colors and fonts, toolbar order and redrawn icons, window tabs, mode cursors,
+  status-bar hints and dialog layouts. The menu bar swaps between LTspice's three layouts (no
+  window, schematic, waveform), item for item with LTspice's icons and keys, and the right-click
+  menus of schematics and plots match too. Keys mean what they mean in LTspice for the active
+  window (C places a capacitor on a schematic, a cursor on a plot).
+- **Settings** (Tools > Settings): LTspice's ten tabs. Drafting options, schematic font and pen
+  thickness, waveform font and trace width, toolbar icon size, background image, save-on-run,
+  .raw/.log directory, automatic .raw deletion, SPICE tolerances and integration method (passed
+  to ngspice as `.options`), netlist µ→u and order, and symbol/library search paths all work.
+  As in LTspice, only settings marked [*] are remembered. Options that have no ngspice
+  equivalent (solver, threads, compression, hacks) are shown greyed out with a tooltip.
 - **Editing**: LTspice-style editing modes (place, wire, label, move, stretch, duplicate, rotate,
   mirror, delete, zoom area, search), undo/redo, LTspice's own placement and wiring behavior
   (parts carried by their middle, labels kept upright on rotation, click an open pin to start a
@@ -45,15 +54,23 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
 
   `.step` (linear, octave, decade, list) and `.meas` are handled by TuxSpice itself. Measurements
   can use earlier results, and are reported per step in the SPICE Error Log (Ctrl+L).
-- **Waveforms**: stacked plot panes, colored trace labels, dB and phase for AC, a second axis for
-  currents, trace arithmetic, average/RMS, cursors, FFT, and `.plt` plot settings.
+- **Waveforms**: stacked plot panes (add above/below, move, delete), colored trace labels, dB and
+  phase for AC, a second axis for currents, trace arithmetic with `plot.defs` user functions,
+  average/RMS, cursors, FFT, step selection, manual limits, data-point marks, undo/redo of trace
+  changes, notes and annotations (text, arrows, lines, boxes, ellipses, cursor position),
+  Execute .MEAS Script, and `.plt` plot settings (save, open, reload).
+- **AI assistants (MCP)**: like LTspice 26.1, TuxSpice has a local MCP server, so assistants such as
+  Claude Code, Claude Desktop, Cursor or GitHub Copilot can read, edit and simulate your designs and
+  read the results. It offers the same tools as LTspice's server. See [AI assistants](#ai-assistants-mcp).
+- **Output**: print, print preview and setup (optionally monochrome), SVG/PNG images, subcircuit
+  netlists of a sheet, and PCB netlists (Tango, PADS, Allegro/Telesis, wire list).
 - **Probing**: click a wire to plot its voltage, a part to plot its current, Alt-click a part to plot its power.
 
 ### How many LTspice examples run
 
 | Example set | Result |
 |---|---|
-| Educational (82) | EDU_RESULT |
+| Educational (82 top level, 100 with subfolders) | **79/82**: Royer needs an encrypted model, Electrometer runs but takes ~5 minutes, PLL2 stalls in ngspice. With subfolders: 10 need encrypted models and 87 of the other 90 run (the third is a Frequency Response Analysis example) |
 | Applications (4,277) | 3,322 need an encrypted ADI model (see Limitations). Of the other 1,043, **929 (89%)** simulate; 102 fail and 12 time out at 60 s |
 
 [`pyltspice/docs/PLAN.md`](pyltspice/docs/PLAN.md) lists what still fails and why.
@@ -125,6 +142,38 @@ pyltspice results.raw         # open a waveform file
 python -m pyltspice ...       # same as above
 ```
 
+### AI assistants (MCP)
+
+TuxSpice includes a local [MCP](https://modelcontextprotocol.io) server, `pyltspice-mcp`, that AI
+assistants launch over stdio. It is compatible with LTspice 26.1's `ltspice-mcp-bridge`: same tools,
+arguments, annotations, reply format, error messages and SQLite export schema, checked call by call
+against the real bridge (`scripts/mcp_diff.py`). Prompts and scripts written for LTspice work here:
+
+- open designs, read and replace their text, generate the netlist
+- run simulations, poll them and read the SPICE log (including `.meas` results)
+- list signals in the results, read waveform data (windowed, per `.step`, dB/phase for AC), or
+  export it to SQLite
+- read reference documentation: LTspice's AI reference from your installer (extracted by
+  `scripts/extract_msi.py`) plus notes on how TuxSpice differs
+
+If TuxSpice is running, the assistant shares that window: it sees your open documents, its edits
+appear live and each one is a normal undo step (Ctrl+Z), and nothing is saved until you save.
+Otherwise the server works headless on files (edits are written to disk). Running windows listen
+on 127.0.0.1 only, with a per-session token in a file only you can read.
+
+To set it up, use **Tools > Configure Third-Party AI Assistants...**. It detects and configures
+Claude Code, Claude Desktop, Cursor and VS Code (GitHub Copilot), for your user or for one project
+folder. TuxSpice also offers this once at startup. Or register it by hand as a stdio server named
+`tuxspice`, for example:
+
+```sh
+claude mcp add --scope user tuxspice -- /path/to/.venv/bin/python -m pyltspice.mcp
+```
+
+Assistants send what they read to their provider's servers, so don't connect one to designs you
+can't share with that provider, and check what it changes. Set `PYLTSPICE_NO_MCP=1` to keep a
+TuxSpice window from accepting assistants.
+
 ### Configuration
 
 | Variable | Purpose |
@@ -132,6 +181,7 @@ python -m pyltspice ...       # same as above
 | `PYLTSPICE_DATA` | Data directory (default `~/.local/share/pyltspice`) |
 | `PYLTSPICE_LIB` | Extracted library directory (default `<data>/ltspice_lib`) |
 | `PYLTSPICE_NGSPICE` | Path to the ngspice binary (default: a copy in the data directory, then `/usr/bin/ngspice`) |
+| `PYLTSPICE_NO_MCP` | Don't let AI assistants attach to this window (no MCP host, no startup offer) |
 
 Colors and other preferences are stored in `~/.config/pyltspice`.
 
@@ -145,6 +195,10 @@ Colors and other preferences are stored in `~/.config/pyltspice`.
   inside some PLL loops (the PLL2 example).
 - Some LTspice-only commands are not available: `.machine` state machines, `.timedomain`, the
   Transient Frequency Response analysis, efficiency reports, `.wave` export.
+- Some LTspice menu commands are present but greyed out because they're not implemented yet:
+  the symbol editor (New Symbol), buses (BUS tap), Paste between schematics, marching waveforms,
+  eye diagrams, phase/gain margin annotations and Fast Access files. Images are written as SVG
+  or PNG instead of EMF.
 - ngspice converges differently from LTspice, so a few circuits fail or need relaxed options.
   TuxSpice retries non-converging runs automatically, for at most 30 seconds per retry.
 - Some circuits are slow in ngspice: the Electrometer example takes about 5 minutes. Use Halt

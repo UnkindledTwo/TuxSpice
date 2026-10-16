@@ -1,4 +1,5 @@
 """Reader for SPICE .raw files written by ngspice or LTspice (binary or ASCII)."""
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,8 +57,9 @@ class Plot:
             return "pz"
         if "distortion" in p:
             return "disto"
+        # whole words: "DC transfer characteristic" contains "ac" as a substring
         for key in ("transient", "ac", "dc", "operating point", "noise", "transfer"):
-            if key in p:
+            if re.search(rf"\b{key}\b", p):
                 return {"transient": "tran", "operating point": "op", "transfer": "tf"}.get(key, key)
         return p
 
@@ -77,7 +79,31 @@ def _header_lines(raw: bytes, pos: int, utf16: bool):
     return raw[pos:end].decode("latin-1").rstrip("\r"), end + 1
 
 
+def merge_sense_currents(plot: Plot):
+    """AC runs carry 0 V sense sources (runner.add_ac_current_probes): copy their branch currents
+    into the device current vectors ngspice left at zero, i(@r1[i]) <- i(v__isense_r1)."""
+    if plot.data is None:
+        return
+    idx = {v.name.lower(): v.index for v in plot.variables}
+    for v in plot.variables:
+        m = re.match(r"^i\(v__isense_(.+)\)$|^v__isense_(.+)#branch$", v.name, re.I)
+        if not m:
+            continue
+        dev = (m.group(1) or m.group(2)).lower()
+        for target in (f"i(@{dev}[i])", f"@{dev}[i]"):
+            if target in idx:
+                plot.data[idx[target]] = plot.data[v.index]
+                break
+
+
 def read_raw(path) -> list[Plot]:
+    plots = _read_raw(path)
+    for p in plots:
+        merge_sense_currents(p)
+    return plots
+
+
+def _read_raw(path) -> list[Plot]:
     raw = Path(path).read_bytes()
     utf16 = len(raw) > 1 and raw[1] == 0
     pos = 0

@@ -586,6 +586,267 @@ def i_waveform_doc(p):
     p.drawPath(path)
 
 
+# -- menu icons (LTspice 26 menus put a glyph on most items; drawn from observation)
+def i_print_preview(p):
+    i_print(p)
+    p.save()
+    p.translate(12, 12)
+    p.scale(0.6, 0.6)
+    _lens(p, TEAL)
+    p.restore()
+
+
+def i_print_setup(p):
+    _page(p)
+    p.save()
+    p.translate(0, 13)
+    p.scale(0.55, 0.55)
+    _gear(p)
+    p.restore()
+
+
+def i_export(p):
+    _page(p)
+    _badge(p, 10, 22, B, "<")
+
+
+def i_write_image(p):
+    i_export(p)
+
+
+def i_view_netlist(p):
+    i_netlist(p)
+
+
+def i_meas(p):
+    _page(p)
+    _fill(p, "#ffd000", _pen(B, 2))
+    p.drawEllipse(QPointF(10, 21), 7.6, 7.6)
+    _fill(p, B)
+    p.drawPolygon(_poly((8, 17), (14, 21), (8, 25)))
+
+
+def i_fast_access(p):
+    _floppy(p)
+    _fill(p, "#ffd000", _pen(K, 1))
+    p.drawPolygon(_poly((20, 8), (14, 19), (18, 19), (15, 29), (24, 16), (19.5, 16), (23, 8)))
+
+
+def i_current(p):
+    p.setPen(_pen(K, 2.8))
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(QPointF(16, 16), 10, 10)
+    p.setPen(_pen(K, 2.4))
+    p.drawLine(QPointF(16, 10), QPointF(16, 22))
+    _fill(p, K)
+    p.drawPolygon(_poly((11.5, 18), (20.5, 18), (16, 24)))
+    _pin(p, 16, 4)
+    _pin(p, 16, 28)
+
+
+def i_paste(p):
+    _fill(p, "#a0a0a0", _pen(K, 1.5))
+    p.drawRoundedRect(QRectF(5, 5, 22, 25), 2, 2)
+    _fill(p, K)
+    p.drawRect(QRectF(11, 2, 10, 6))
+    _fill(p, W, _pen(K, 1))
+    p.drawRect(QRectF(10, 12, 13, 15))
+
+
+def i_dataflag(p):
+    _label_text(p, "1.8", "#ff2020", 17, QRectF(0, 4, 32, 24), "DejaVu Sans Mono")
+
+
+def i_blank_sheet(p):
+    _win(p, QRectF(3, 5, 26, 22))
+
+
+def i_probe_ref(p):
+    p.setPen(_pen("#707070", 2.6))
+    p.drawLine(QPointF(6, 27), QPointF(24, 6))
+    p.setPen(_pen(K, 1.2))
+    p.drawLine(QPointF(4, 29), QPointF(7, 26))
+    p.drawLine(QPointF(15, 25), QPointF(27, 25))
+
+
+def i_add_trace(p):
+    _screen(p)
+    _sine(p, 21, "#00e0e0")
+    p.setPen(_pen(W, 2.6))
+    p.drawLine(QPointF(10, 6), QPointF(10, 14))
+    p.drawLine(QPointF(6, 10), QPointF(14, 10))
+
+
+def i_select_steps(p):
+    _screen(p)
+    for y, c in ((9, W), (16, "#00e0e0"), (23, "#00e000")):
+        _sine(p, y, c)
+
+
+def i_cursor(p):
+    p.setPen(_pen("#707070", 1.6))
+    p.drawLine(QPointF(16, 3), QPointF(16, 29))
+    p.drawLine(QPointF(3, 16), QPointF(29, 16))
+
+
+def i_clear_cursors(p):
+    i_cursor(p)
+    _badge(p, 23, 24, "#e02020", "x")
+
+
+def i_redraw(p):
+    p.setPen(_pen(K, 4))
+    p.setBrush(Qt.NoBrush)
+    p.drawArc(QRectF(5, 5, 22, 22), 60 * 16, 290 * 16)
+    _fill(p, K)
+    p.drawPolygon(_poly((17, 1), (26, 6), (17, 12)))
+
+
+def i_reload(p):
+    _folder(p)
+    p.setPen(_pen(W, 2.4))
+    p.setBrush(Qt.NoBrush)
+    p.drawArc(QRectF(10, 15, 11, 11), 60 * 16, 290 * 16)
+
+
+def _two_panes(p):
+    for y in (2, 17):
+        _fill(p, W, _pen("#707070", 1.2))
+        p.drawRect(QRectF(3, y, 26, 13))
+        p.setPen(_pen("#909090", 1.6))
+        p.drawLine(QPointF(5, y + 8), QPointF(27, y + 5))
+
+
+def i_pane_above(p):
+    _two_panes(p)
+    _fill(p, B)
+    p.drawRect(QRectF(3, 2, 26, 13))
+    p.setPen(_pen(W, 2.6))
+    p.drawLine(QPointF(10, 8.5), QPointF(18, 8.5))
+    p.drawLine(QPointF(14, 4.5), QPointF(14, 12.5))
+
+
+def i_pane_below(p):
+    _two_panes(p)
+    _fill(p, B)
+    p.drawRect(QRectF(3, 17, 26, 13))
+    p.setPen(_pen(W, 2.6))
+    p.drawLine(QPointF(10, 23.5), QPointF(18, 23.5))
+    p.drawLine(QPointF(14, 19.5), QPointF(14, 27.5))
+
+
+def i_pane_up(p):
+    _two_panes(p)
+    _fill(p, B)
+    p.drawPolygon(_poly((16, 4), (10, 12), (22, 12)))
+
+
+def i_pane_down(p):
+    _two_panes(p)
+    _fill(p, B)
+    p.drawPolygon(_poly((16, 28), (10, 20), (22, 20)))
+
+
+def i_pane_delete(p):
+    _two_panes(p)
+    p.setPen(_pen("#e02020", 2.6))
+    p.drawLine(QPointF(10, 5), QPointF(20, 13))
+    p.drawLine(QPointF(10, 13), QPointF(20, 5))
+
+
+def i_colors_reset(p):
+    _screen(p)
+    for y, c in ((9, "#00e000"), (16, "#ff2020"), (23, "#3060ff")):
+        p.setPen(_pen(c, 3.2))
+        p.drawLine(QPointF(7, y), QPointF(25, y))
+
+
+def i_manual_limits(p):
+    _fill(p, "#00b000")
+    p.drawRoundedRect(QRectF(3, 3, 26, 26), 3, 3)
+    p.setPen(_pen(K, 2.6))
+    p.drawPolyline(_poly((9, 7), (9, 24), (26, 24)))
+    _arrow(p, 18, 13, False)
+
+
+def i_cursor_pos(p):
+    _fill(p, "#a0a0a0")
+    p.drawRect(QRectF(3, 3, 26, 26))
+    _label_text(p, "x,y", W, 11, QRectF(3, 3, 26, 14))
+
+
+def i_arrow(p):
+    p.setPen(_pen("#707070", 2.6))
+    p.drawLine(QPointF(5, 5), QPointF(24, 24))
+    _fill(p, "#707070")
+    p.drawPolygon(_poly((28, 28), (16, 25), (25, 16)))
+
+
+def i_line_style(p):
+    p.setPen(_pen(K, 3))
+    p.drawLine(QPointF(3, 8), QPointF(29, 8))
+    pen = _pen(K, 3)
+    pen.setCapStyle(Qt.FlatCap)
+    pen.setDashPattern([2, 1])
+    p.setPen(pen)
+    p.drawLine(QPointF(3, 16), QPointF(29, 16))
+    pen.setDashPattern([0.7, 1])
+    p.setPen(pen)
+    p.drawLine(QPointF(3, 24), QPointF(29, 24))
+
+
+def i_plot_defs(p):
+    _page(p)
+    p.setPen(_pen("#ffd000", 3.4))
+    p.drawLine(QPointF(5, 28), QPointF(17, 14))
+    p.setPen(_pen(B, 2))
+    p.drawLine(QPointF(3, 30), QPointF(5, 28))
+
+
+def _log_page(p, color):
+    _page(p)
+    _fill(p, color, _pen(W, 1.2))
+    p.drawEllipse(QPointF(10, 22), 7.6, 7.6)
+    _fill(p, W)
+    p.drawPolygon(_poly((10, 17), (14.5, 25.5), (5.5, 25.5)))
+    _fill(p, color)
+    p.drawPolygon(_poly((10, 20.5), (12, 24.2), (8, 24.2)))
+
+
+def i_ltspice_log(p):
+    _log_page(p, B)
+
+
+def i_model_log(p):
+    _log_page(p, "#e02020")
+
+
+def i_arrange(p):
+    _win(p, QRectF(3, 3, 26, 26))
+    _fill(p, B)
+    for x in (6, 14, 22):
+        p.drawRect(QRectF(x, 22, 6, 4))
+
+
+def i_clear_waves(p):
+    _screen(p)
+    _sine(p, 16, "#00e000")
+    p.setPen(_pen("#e02020", 2.4))
+    p.drawLine(QPointF(7, 7), QPointF(25, 25))
+
+
+def i_ai(p):
+    """Four-pointed sparkle (Tools > Configure Third-Party AI Assistants)."""
+    def star(cx, cy, r, color):
+        _fill(p, color)
+        k = r * 0.28
+        p.drawPolygon(_poly((cx, cy - r), (cx + k, cy - k), (cx + r, cy), (cx + k, cy + k), (cx, cy + r),
+                            (cx - k, cy + k), (cx - r, cy), (cx - k, cy - k)))
+    star(14, 16, 12, K)
+    star(25, 7, 5.5, TEAL)
+    star(25, 25, 4, B)
+
+
 ICONS = {name[2:]: fn for name, fn in list(globals().items()) if name.startswith("i_") and callable(fn)}
 
 
