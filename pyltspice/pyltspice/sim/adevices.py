@@ -6,7 +6,12 @@ behaviour and defaults from the bundled help page "A. Special Functions".
 - OTA (also OTA2/MOTA*): behavioral B-source transconductor.
 - AND/OR/XOR/BUF, DFLOP, SRFLOP: XSPICE digital models behind adc/dac bridges, so
   propagation delay (Td) and edge triggering behave like LTspice.
-- SCHMITT, SAMPLEHOLD, MODULATOR, VARISTOR: behavioral approximations.
+- SCHMITT, SAMPLEHOLD, MODULATOR, VARISTOR: behavioral approximations. The differential
+  Schmitt symbols (diffschmitt, diffschmtbuf, diffschmtinv) are SCHMITT with in+/in- on pins 1/2.
+- COUNTER: a clock divider (XSPICE d_fdiv). LTspice doesn't document it and no bundled example
+  uses it; from the symbol (CLK in; Phi1 on pin 7, Phi2 on pin 6) and the cycles= parameter we
+  take it to count rising CLK edges modulo `cycles` (default 2), with Phi1 high for the first
+  half of each count and Phi2 its complement.
 
 Unused terminals are tied to terminal 8 (com) by the netlister; a terminal equal to
 com is treated as absent, as LTspice does.
@@ -18,8 +23,8 @@ from . import spicenum
 GATES = {"and": "d_and", "or": "d_or", "xor": "d_xor", "buf": "d_buffer", "inv": "d_buffer"}
 SUPPORTED = set(GATES) | {"ota", "dflop", "srflop", "schmitt", "schmtbuf", "schmtinv",
                           "samplehold", "modulator", "modulate", "modulate2", "varistor",
-                          "phasedet", "phidet"}
-UNSUPPORTED = {"counter", "diffschmitt", "diffschmtbuf", "diffschmtinv"}
+                          "phasedet", "phidet", "counter"}
+UNSUPPORTED = set()
 
 
 def num(v: str) -> str:
@@ -78,6 +83,8 @@ def expand(tok, warnings: list) -> list[str] | None:
         return _varistor(name, nodes, params)
     if model in ("phasedet", "phidet"):
         return _phasedet(name, nodes, params)
+    if model == "counter":
+        return _counter(name, nodes, params)
     return None
 
 
@@ -269,6 +276,21 @@ def _srflop(name, n, params):
     return lines + _outputs(name, q, nqb, nq, com, params)
 
 
+def _counter(name, n, params):
+    """Divide CLK (pin 1) by `cycles`: Phi1 (pin 7) high for the first half of each period,
+    Phi2 (pin 6) its complement. See the module docstring for why this reading."""
+    clk, phi2, phi1, com = n[0], n[5], n[6], n[7]
+    cycles = max(1, int(round(_fnum(params.get("cycles", "2"), 2))))
+    high = max(1, cycles // 2) if cycles > 1 else 1
+    td = _delay(params)
+    lines, dig = _adc(name, [clk], com, _vth(params))
+    q = f"{name}_q"
+    lines.append(f"A{name}_div {dig[0]} {q} {name}_divm")
+    lines.append(f".model {name}_divm d_fdiv(div_factor={cycles} high_cycles={high} i_count=0 "
+                 f"rise_delay={td:.6g} fall_delay={td:.6g})")
+    return lines + _outputs(name, q, phi2, phi1, com, params)
+
+
 # ---------------------------------------------------------------- behavioral
 
 def _schmitt(name, n, params):
@@ -449,11 +471,12 @@ _SW_EXT = ("vser", "ilimit", "level", "epsilon")
 
 
 def _model_params(body: str):
-    """'SW(Ron=10 Roff=1Meg Vt=0)' -> {'ron': '10', ...}"""
+    """'SW(Ron=10 Roff=1Meg Vt=0)' -> {'ron': '10', ...}. LTspice also accepts commas between
+    parameters ('D(Ron=1k, Roff=1T ...)' in LTC.lib's LT1012), so values stop at a comma."""
     inner = body[body.find("(") + 1:body.rfind(")")] if "(" in body else body
     inner = re.sub(r"\s*=\s*", "=", inner)
     out = {}
-    for t in re.findall(r"(\w+)=(\{[^}]*\}|\S+)", inner):
+    for t in re.findall(r"(\w+)=(\{[^}]*\}|[^\s,]+)", inner):
         out[t[0].lower()] = t[1]
     return out
 

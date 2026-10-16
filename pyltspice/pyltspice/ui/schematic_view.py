@@ -273,7 +273,9 @@ class SchematicView(QGraphicsView):
             pen.setCosmetic(True)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
+            hidden = self.tool.carried_pins() if hasattr(self.tool, "carried_pins") else set()
             for x, y in self.scene().conn.unconnected:
-                p.drawRect(QRectF(x - 4, y - 4, 8, 8))
+                if (x, y) not in hidden:
+                    p.drawRect(QRectF(x - 4, y - 4, 8, 8))
         if self.tool:
             self.tool.paint_overlay(self, p)

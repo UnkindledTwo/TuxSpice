@@ -75,7 +75,8 @@ Done:
   - `A` symbols are padded to 8 terminals, and hierarchical sheets are netlisted as `.subckt`.
 - Runner: convergence retries capped at 120 s each, and a run with no data counts as a failure.
 - Educational examples: 41/82 at the start of this work → 55 → 62 → **71/82 (87%)** after the
-  orientation fix, Laplace, wavefile and hierarchy fixes (re-measure: `edu_sweep*.txt` in `work/`).
+  orientation fix, Laplace, wavefile and hierarchy fixes → **79/82 (96%)** after the
+  failing-examples pass (Electrometer only times out at 60 s; re-measure: `edu_sweep*.txt` in `work/`).
 
 Open:
 - Fixed in the "failing examples" pass:
@@ -93,6 +94,26 @@ Open:
   - Electrometer: works but takes about 5 minutes (1 MHz chopper simulated for 15 ms).
   - Royer: encrypted ADI model; can't run outside LTspice.
 
+### 1b. Applications examples (4,277), in progress
+- `scripts/sweep_examples.py --static` classifies all examples: 3,322 need an encrypted ADI model
+  (can't run outside LTspice), 1,043 don't.
+- Of those 1,043: 608 ran at the start → **929** after this pass. Fixed: `vto=/dir=` threshold G
+  clamps, `load` current sources, SpiceOrder gaps, `temp` in `{}`/`.param`, nested braces after
+  `table()`, non-ASCII names (`M§Q6`), behavioral `R=`/`Q=`, comma-separated model params (LT1012),
+  `NoJacob`, `smallsig()`, device currents in expressions (`Id(M3)`), parameter-style Value on
+  model subckts (LTC1068), COUNTER.
+- Still failing (114, by cause, from `work/s6.tsv`):
+  - 28 "ngspice produced no output" and 12 timeouts at 60 s: convergence or slow runs; needs
+    case-by-case work.
+  - 12 numparam errors (`Undefined parameter [x]`, `[orn]`): expressions using names ngspice
+    doesn't define.
+  - 11 "not enough nodes" on MOS lines inside ADI macro-models.
+  - 15 aborted runs and "impossible error" (ngspice internal) and 7 time-step failures.
+  - 4 resistors with extra LTspice fields (`R n1 n2 5k -.1u 0 0p`), 4 `unknown subckt ltN-x.x`
+    (a symbol naming a subckt the library doesn't define under that name), 3 `.machine`,
+    2 `.timedomain` (LTspice-only commands), 2 `.tf` with a sweep argument, 2 diodes with `n=`.
+  - 3 LT1964 variants whose model file isn't in the library at all.
+
 ### 2. UI parity, in progress
 - `docs/ui_spec.md` lists every menu item, shortcut and behaviour with its source (help page or
   recollection) and status. Currently 45 done, 10 partial, 12 missing (one of them, Update
@@ -101,8 +122,20 @@ Open:
   Line/Rectangle/Circle/Arc, Zoom Back, Mark Unconnected Pins, the keyboard shortcut editor,
   Tools > Settings (drafting options), View > FFT, File > Export, `.plt` plot settings (auto-loaded
   after a run), Help change logs, and Hierarchy > Open this Sheet's Symbol.
-- Blocked on you: installing Wine (`sudo apt install wine`) so the spec's "recollection"
-  entries, colours and fonts can be checked against real LTspice.
+- Wine round (LTspice 26.1.1 under Wine, see the **W** entries in `ui_spec.md`): default color palette
+  for schematic and waveforms, Tahoma-28-bold schematic text, junction size, black waveform viewer
+  with no grid, LTspice 26 toolbar order with redrawn icons, LTspice 26 default shortcuts (`.`
+  directive, `S` stretch, `Z` zoom area, Alt+R run...), window tab strip, menu bar that swaps for
+  waveform windows, Edit > Search, Mark Unconnected Pins on by default.
+- Second Wine round, editing feel (TuxSpice driven side by side with LTspice on one nested display):
+  part placement (carried by the middle, live name and pin squares, label relayout on rotate),
+  wire drawing (leg order, first-leg commit, double right-click), pin-click wiring, cursors, probe
+  hints with operating point, LTspice-layout dialogs (Component, Net Name, R/C/L with the part
+  databases, source, text, analysis), post-run tiling and focus, shared-prefix plot ticks,
+  toolbar pitch and grey disabled icons. Fixed: clicks inside a part's body didn't hit it.
+- Next from Wine: the remaining Plot Settings items (pane move/delete, Mark Data Points, Manual
+  Limits, Notes & Annotations), Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks,
+  Bus tap, Mark Anchors, and checking the editing dialogs (component, analysis) against LTspice.
 
 ### 3. Remaining features
 - Symbol editor for `.asy` files (File > New Symbol, Edit > Add Pin/Port).

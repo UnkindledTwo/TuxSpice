@@ -133,7 +133,7 @@ def standard_model(name: str) -> str | None:
     return _standard_cards().get(name.lower())
 
 
-LIB_CACHE_VERSION = "26"     # bump when rewrite_device_line changes
+LIB_CACHE_VERSION = "35"     # bump when rewrite_device_line changes
 
 
 def passed_params(lines) -> dict:
@@ -202,6 +202,7 @@ def ngspice_readable(p: Path, warnings=None, errors=None, passed=None) -> Path:
         new = rewrite_device_line(line, warnings if warnings is not None else [],
                                   errors if errors is not None else [])
         lines += new if new is not None else [line]
+    lines = rewrite_device_currents(lines)
     lines = adevices.rewrite_switches(lines)
     lines = adevices.rewrite_vdmos(lines)
     lines = adevices.rewrite_ideal_diodes(lines)
@@ -221,6 +222,8 @@ def fix_expressions(line: str) -> str:
     if not line or line.lstrip()[:1] in "*;":
         return line
     line = strip_inline_comment(line)
+    if not line.isascii():
+        line = ascii_only(line)
     if re.match(r"(?i)\s*\.params\b", line):
         line = re.sub(r"(?i)^(\s*)\.params", r"\1.param", line)
     line = _FUNC_SPACE.sub(lambda m: m.group(1) + "(", line)
@@ -228,7 +231,68 @@ def fix_expressions(line: str) -> str:
         line = expand_table_calls(line)
     if line.lstrip().lower().startswith(".param"):
         line = normalize_param_line(line)
+    if re.search(r"(?i)\btemp(er)?\b", line):
+        line = _temp_in_params(line)
+    if "smallsig" in line.lower():
+        # help (B. Arbitrary Behavioral Source): smallsig() is 1 during .ac/.noise, else 0;
+        # translate() defines lt_smallsig for the analysis being run
+        line = re.sub(r"(?i)\bsmallsig\s*\(\s*\)", "{lt_smallsig}", line)
+    if "{" in line:
+        line = flatten_braces(line)
     return line
+
+
+def flatten_braces(line: str) -> str:
+    """'{a*{b}}' -> '{a*(b)}': LTspice accepts braces nested inside an expression (often after
+    table() expansion with {param} arguments), ngspice's numparam does not."""
+    out, depth = [], 0
+    for ch in line:
+        if ch == "{":
+            depth += 1
+            out.append("{" if depth == 1 else "(")
+        elif ch == "}" and depth:
+            out.append("}" if depth == 1 else ")")
+            depth -= 1
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+_TEMP = re.compile(r"(?i)\btemp(er)?\b(?!\s*=)")
+
+
+def _temp_in_params(line: str) -> str:
+    """LTspice lets `temp` appear in {...} parameter expressions and .param lines (ADI models use
+    it for temperature drift); ngspice's numparam has no temperature variable there. Use the
+    global `lt_temp`, which translate() defines from .temp (27 by default). Behavioral source
+    equations outside braces keep `temp`/`temper`, which ngspice evaluates itself."""
+    if line.lstrip().lower().startswith(".param"):
+        return _TEMP.sub("lt_temp", line)
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(line):
+        if ch == "{":
+            if depth == 0:
+                out.append(line[start:i])
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                out.append(_TEMP.sub("lt_temp", line[start:i + 1]))
+                start = i + 1
+    out.append(line[start:])
+    return "".join(out)
+
+
+_NON_ASCII = {"\u00a7": "S", "\u03a9": "", "\u2126": "", "\u00b0": "", "\u00b5": "u", "\u03bc": "u",
+              "\u00a0": " "}
+
+
+def ascii_only(line: str) -> str:
+    """ADI libraries use characters like '§' in instance names (M§Q6, B§Ibp) and 'Ω' after
+    values; ngspice rejects non-ASCII input. The mapping is fixed, so every reference to a
+    renamed element is renamed the same way."""
+    return "".join(c if c.isascii() else _NON_ASCII.get(c, "_") for c in line)
 
 
 def strip_inline_comment(line: str) -> str:
@@ -385,6 +449,10 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
                 return r
         if magnetics.is_core(tok):
             return magnetics.core_elements(tok)
+    if head in "rc" and len(tok) >= 4:
+        conv = _behavioral_rc(tok)
+        if conv:
+            return conv
     if head in "clv" and len(tok) >= 4:
         pos, params = _split_params(tok[3:])
         if head == "v":
@@ -395,14 +463,18 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
     if head == "b" and len(tok) >= 4:
         # LTspice B sources accept Rpar=/Cpar= after the expression
         extra, keep = [], []
+        # 'NoJacob' (undocumented) only keeps the source out of LTspice's Jacobian: drop it
+        dropped = [t for t in tok[3:] if t.lower() == "nojacob"]
         for t in tok[3:]:
+            if t.lower() == "nojacob":
+                continue
             k, eq, v = t.partition("=")
             if eq and k.lower() in ("rpar", "cpar"):
                 el = "R" if k.lower() == "rpar" else "C"
                 extra.append(f"{el}_{tok[0]}_par {tok[1]} {tok[2]} {v}")
             else:
                 keep.append(t)
-        if extra:
+        if extra or dropped:
             return [" ".join(tok[:3] + keep)] + extra
         return None
     if head == "k" and len(tok) >= 4:
@@ -440,7 +512,161 @@ def rewrite_device_line(line: str, warnings: list, errors: list, search_dirs=())
     if head in "eg" and "table" in stripped.lower():
         conv = adevices.convert_table(stripped)
         return [conv] if conv else None
+    if head == "g":
+        conv = _threshold_vccs(tok)
+        if conv:
+            return [conv]
+    if head == "i" and any(t.lower() == "load" for t in tok[3:]):
+        return _load_current_source(tok, warnings)
     return None
+
+
+_DYNAMIC = re.compile(r"(?i)\b(v|i)\s*\(|\btime\b")
+
+
+def _behavioral_rc(tok):
+    """LTspice's behavioral 'R n+ n- R=<expr>' and 'C n+ n- Q=<expr>' (the expression may use
+    node voltages, currents and time; help pages R. Resistor / C. Capacitor). ngspice only
+    takes constant values there, so they become B sources: I=V(n+,n-)/(expr) and
+    I=ddt(expr). Plain parameter values (R={x}) are left alone."""
+    key = "r" if tok[0][0].lower() == "r" else "q"
+    rest = " ".join(tok[3:])
+    m = re.match(rf"(?i)^{key}\s*=\s*(.+)$", rest)
+    if not m:
+        return None
+    expr = m.group(1).strip()
+    if expr.startswith("{") and expr.endswith("}"):
+        expr = expr[1:-1]
+    if not _DYNAMIC.search(expr):
+        return None
+    # parameters after the expression (e.g. 'noiseless') don't apply to a B source
+    expr = re.sub(r"(?i)\s+(noiseless|tc\d?=\S+)$", "", expr)
+    n1, n2 = tok[1], tok[2]
+    if key == "r":
+        return [f"B{tok[0]} {n1} {n2} I=V({n1},{n2})/({expr})"]
+    return [f"B{tok[0]} {n1} {n2} I=ddt({expr})"]
+
+
+# terminal (1-based) whose current each LTspice current function reads, per element letter
+_TERMINALS = {"m": {"id": 1, "ig": 2, "is": 3, "ib": 4},
+              "q": {"ic": 1, "ib": 2, "ie": 3, "is": 4},
+              "j": {"id": 1, "ig": 2, "is": 3},
+              "z": {"id": 1, "ig": 2, "is": 3}}
+_CURRENT_REF = re.compile(r"(?i)\b(i[a-z]?)\(\s*([a-z][\w$§.:]*)\s*\)")
+
+
+def rewrite_device_currents(lines: list[str]) -> list[str]:
+    """LTspice expressions may read any element's current: Id(M3), Ic(Q1), I(R5), I(D2)...
+    ngspice B/E/G expressions only know voltage-source currents. Each referenced terminal gets
+    a 0 V sense source in series (current into the terminal, as LTspice reports it) and the
+    reference becomes I(V__s_<dev>_<n>). Done per .subckt scope, since names are local."""
+    out = list(lines)
+    scopes, start = [], 0
+    for i, l in enumerate(out):
+        low = l.lstrip().lower()
+        if low.startswith(".subckt"):
+            scopes.append((start, i)); start = i + 1
+        elif low.startswith(".ends"):
+            scopes.append((start, i)); start = i + 1
+    scopes.append((start, len(out)))
+    for a, b in scopes:
+        _sense_scope(out, a, b)
+    return [x for l in out for x in l.split("\n")]
+
+
+def _sense_scope(out, a, b):
+    devices = {}
+    for i in range(a, b):
+        l = out[i]
+        if l and l.strip() and l.lstrip()[0].isalpha():
+            devices.setdefault(l.split()[0].lower(), i)
+    needed = {}                       # (device, terminal) -> sense source name
+    for i in range(a, b):
+        l = out[i]
+        if not l or l.lstrip()[:1].lower() not in "beg" or "(" not in l:
+            continue
+        def sub(m):
+            fn, name = m.group(1).lower(), m.group(2)
+            dev = name.lower()
+            if dev not in devices or dev[0] in "vb" or (fn == "i" and dev[0] in "efgh"):
+                return m.group(0)
+            if fn == "i":
+                term = 1
+            else:
+                term = _TERMINALS.get(dev[0], {}).get(fn)
+                if term is None:
+                    return m.group(0)
+            key = (dev, term)
+            if key not in needed:
+                needed[key] = f"V__s_{name}_{term}".replace(".", "_").replace(":", "_")
+            return f"I({needed[key]})"
+        new = _CURRENT_REF.sub(sub, l)
+        if new != l:
+            out[i] = new
+    extra = {}
+    for (dev, term), vname in needed.items():
+        i = devices[dev]
+        tok = out[i].split()
+        if term >= len(tok):
+            continue
+        node = tok[term]
+        tok[term] = f"{node}__s_{vname[4:]}"
+        out[i] = " ".join(tok)
+        extra.setdefault(i, []).append(f"{vname} {node} {tok[term]} 0")
+    for i in sorted(extra, reverse=True):
+        out[i] = "\n".join([out[i]] + extra[i])
+
+
+def _value(v: str) -> str:
+    v = v.strip()
+    return f"({v[1:-1]})" if v.startswith("{") and v.endswith("}") else v
+
+
+def _threshold_vccs(tok):
+    """LTspice's undocumented 'G n+ n- nc+ nc- gm vto=<V> dir=1' (574 uses in LTC.lib and the
+    ADI op-amp macro-models, always dir=1): a one-sided clamp that conducts gm*(V(nc+,nc-)-vto)
+    once the control voltage passes vto, and nothing below. Read from how the models use it
+    (output-stage and input clamps); dir=-1 is taken as the mirror image. Rendered as a
+    B source with the same C1 quadratic knee (1 mV) as the ideal diodes, without a leakage tail."""
+    if len(tok) < 7:
+        return None
+    pos, params = _split_params(tok[5:])
+    keys = {k.split("=", 1)[0].lower(): k.split("=", 1)[1] for k in params}
+    if "vto" not in keys and "dir" not in keys or len(pos) != 1:
+        return None
+    if any(w in " ".join(tok).lower() for w in ("poly", "table", "laplace", "value")):
+        return None
+    gm = _value(pos[0])
+    vto = _value(keys.get("vto", "0"))
+    d = spicenum.parse(keys.get("dir", "1")) or 1
+    x = f"V({tok[3]},{tok[4]})-({vto})"
+    if d >= 0:
+        expr = f"({gm})*{adevices._quad_knee(x, '1m')}"
+    else:
+        expr = f"-({gm})*{adevices._quad_knee(f'-({x})', '1m')}"
+    return f"B{tok[0]} {tok[1]} {tok[2]} I={expr}"
+
+
+def _load_current_source(tok, warnings):
+    """'I n+ n- <value> [AC=..] load' (help: I. Current Source): a dissipative load. Constant
+    current above 0.5 V across it, falling to zero at 0 V with a resistance of 0.25 V / value
+    near zero. I0*tanh(V/0.25V) has exactly that slope and is within 4% of I0 at 0.5 V.
+    Only constant values are handled; for other forms 'load' is dropped with a warning."""
+    rest = [t for t in tok[3:] if t.lower() != "load"]
+    ac = [t for t in rest if t.lower().startswith("ac=") or t.lower() == "ac"]
+    vals = [t for t in rest if t not in ac]
+    i0 = spicenum.parse(vals[0]) if len(vals) == 1 and not vals[0].startswith("{") else None
+    if len(vals) == 1 and vals[0].startswith("{"):
+        i0 = vals[0]
+    if i0 is None or (isinstance(i0, float) and i0 <= 0):
+        if i0 is None:
+            warnings.append(f"{tok[0]}: 'load' ignored for a non-constant current source")
+        return [" ".join(tok[:3] + rest)]
+    v = _value(vals[0]) if isinstance(i0, str) else f"{i0:.12g}"
+    out = [f"B{tok[0]} {tok[1]} {tok[2]} I=({v})*tanh(V({tok[1]},{tok[2]})/0.25)"]
+    if ac:
+        out.append(" ".join([tok[0], tok[1], tok[2], "0"] + ac))
+    return out
 
 
 def _split_params(tokens):
@@ -608,6 +834,10 @@ def translate(text: str, search_dirs=()) -> Translation:
             elif head == ".tran":
                 tr.analysis = tr.analysis or "tran"
                 out.append(_translate_tran(tok, tr))
+            elif head in (".pz", ".disto"):
+                # ngspice-only analyses (LTspice has neither); passed through unchanged
+                tr.analysis = tr.analysis or head[1:]
+                out.append(line)
             elif head in (".ac", ".op", ".noise", ".tf", ".dc"):
                 tr.analysis = tr.analysis or head[1:]
                 if head == ".dc":
@@ -691,6 +921,7 @@ def translate(text: str, search_dirs=()) -> Translation:
             new = tok[:4] + [tok[3]] + tok[4:]
             out[idx] = " ".join(new)
 
+    out = rewrite_device_currents(out)
     out = adevices.rewrite_switches(out)
     out = adevices.rewrite_vdmos(out)
     out = adevices.rewrite_ideal_diodes(out)
@@ -702,7 +933,12 @@ def translate(text: str, search_dirs=()) -> Translation:
     for f in list(used):
         used |= FUNC_DEPS.get(f, set())
     func_defs = [LT_FUNCS[f] for f in LT_FUNCS if f in used]     # dict order = dependency order
-    body = [title, ".param pi=3.141592653589793"] + func_defs + out + model_cards + [".options savecurrents", ".end"]
+    temps = [spicenum.parse(t) for l in out if l.lower().startswith(".temp")
+             for t in l.split()[1:2]]
+    lt_temp = temps[0] if temps and temps[0] is not None else 27
+    smallsig = 1 if tr.analysis in ("ac", "noise") else 0
+    body = [title, ".param pi=3.141592653589793", f".param lt_temp={lt_temp:g}",
+            f".param lt_smallsig={smallsig}"] + func_defs + out + model_cards + [".options savecurrents", ".end"]
     tr.text = "\n".join(body) + "\n"
     return tr
 

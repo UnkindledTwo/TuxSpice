@@ -230,7 +230,8 @@ def element_line(inst, sym, nodes) -> tuple[str, list]:
         # subckt name: SpiceModel when it names one; with a model *file*, Value2 holds
         # the subckt name (+params); otherwise Value2 adds parameters after Value
         if model:
-            parts += [model, value2]
+            # e.g. LTC1068-200: SpiceModel LTC1068-200, Value Fclk=2Meg -> parameters
+            parts += [model] + ([value] if "=" in value else []) + [value2]
         elif model_is_file and value2:
             parts.append(value2)
         else:
@@ -247,6 +248,18 @@ def element_line(inst, sym, nodes) -> tuple[str, list]:
         if v:
             parts.append(v)
     return " ".join(p for p in parts if p), includes
+
+
+def _fill_order_gaps(inst, pins, nodes):
+    """Some ADI symbols skip SpiceOrder numbers for pins they don't draw (ADG919: 1-5 and 8,
+    against an 8-port subckt). The subckt still needs a node in every position, so missing
+    orders get their own unconnected node, as LTspice must do for these examples to run."""
+    orders = [p.pin.order for p in pins]
+    if not orders or orders == list(range(1, len(orders) + 1)):
+        return nodes
+    by_order = dict(zip(orders, nodes))
+    tag = re.sub(r"\W", "_", inst.name or "X")
+    return [by_order.get(k, f"NC_{tag}_{k}") for k in range(1, max(orders) + 1)]
 
 
 def _adevice_nodes(pins, nodes):
@@ -302,6 +315,8 @@ def _body_lines(sch: Schematic, lib, local, conn, includes, errors, subckts, sta
         nodes = [conn.net_of_point[p.point] for p in pins]
         if _attr(inst, sym, "Prefix")[:1].upper() == "A":
             nodes = _adevice_nodes(pins, nodes)
+        elif _attr(inst, sym, "Prefix")[:1].upper() == "X":
+            nodes = _fill_order_gaps(inst, pins, nodes)
         child = child_sheet(inst, sym, local)
         if child is not None:
             name = child.stem

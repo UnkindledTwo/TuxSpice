@@ -24,10 +24,61 @@ def _buttons(dlg, layout):
     return bb
 
 
+def popup_at_cursor(dlg: QDialog):
+    """LTspice opens its small editors centred on the mouse pointer (kept on screen)."""
+    from PySide6.QtGui import QCursor, QGuiApplication
+    dlg.adjustSize()
+    pos = QCursor.pos()
+    screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+    r = dlg.frameGeometry()
+    r.moveCenter(pos)
+    if screen is not None:
+        g = screen.availableGeometry()
+        r.moveLeft(max(g.left(), min(r.left(), g.right() - r.width())))
+        r.moveTop(max(g.top(), min(r.top(), g.bottom() - r.height())))
+    dlg.move(r.topLeft())
+
+
+def _ok_cancel_column(dlg, extra=()):
+    """OK / Cancel stacked at the top right, as in LTspice's component editors."""
+    col = QVBoxLayout()
+    ok = QPushButton("OK")
+    ok.setDefault(True)
+    ok.clicked.connect(dlg.accept)
+    cancel = QPushButton("Cancel")
+    cancel.clicked.connect(dlg.reject)
+    col.addWidget(ok)
+    col.addWidget(cancel)
+    for b in extra:
+        col.addWidget(b)
+    col.addStretch()
+    return col
+
+
 # ---------------------------------------------------------------- text
 
+class _TextEdit(QPlainTextEdit):
+    """Enter accepts the dialog; Shift+Enter (or Ctrl+M) starts a new line, as in LTspice."""
+
+    def __init__(self, dialog):
+        super().__init__()
+        self.dialog = dialog
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if ev.modifiers() & Qt.ShiftModifier:
+                self.insertPlainText("\n")
+            else:
+                self.dialog.accept()
+            return
+        if ev.key() == Qt.Key_M and ev.modifiers() & Qt.ControlModifier:
+            self.insertPlainText("\n")
+            return
+        super().keyPressEvent(ev)
+
+
 class TextDialog(QDialog):
-    """'Edit Text on the Schematic' (T and S commands)."""
+    """'Edit Text on the Schematic' (T and . commands), laid out like LTspice 26's."""
 
     def __init__(self, parent=None, text: asc.Text | None = None, directive=False):
         super().__init__(parent)
@@ -41,25 +92,28 @@ class TextDialog(QDialog):
         hl.addWidget(self.comment)
         hl.addWidget(self.directive)
         top.addWidget(how)
-        right = QFormLayout()
+        jb = QGroupBox("Justification")
+        jl = QVBoxLayout(jb)
         self.just = QComboBox()
         self.just.addItems(JUSTS)
         self.vertical = QCheckBox("Vertical Text")
+        jl.addWidget(self.just)
+        jl.addWidget(self.vertical)
+        top.addWidget(jb)
+        fb = QGroupBox("Font Size")
+        fl = QVBoxLayout(fb)
         self.size = QComboBox()
         self.size.addItems(FONT_SIZES)
-        right.addRow("Justification", self.just)
-        right.addRow("Font Size", self.size)
-        right.addRow(self.vertical)
-        top.addLayout(right)
+        fl.addWidget(self.size)
+        fl.addStretch()
+        top.addWidget(fb)
+        top.addLayout(_ok_cancel_column(self))
         lay.addLayout(top)
-        lay.addWidget(QLabel("Type Ctrl-M to start a new line."))
-        self.edit = QPlainTextEdit()
-        f = QFont("Monospace")
-        f.setStyleHint(QFont.TypeWriter)
-        self.edit.setFont(f)
-        self.edit.setMinimumSize(480, 140)
+        self.edit = _TextEdit(self)
+        self.edit.setMinimumWidth(440)
+        self.edit.setFixedHeight(70)
         lay.addWidget(self.edit)
-        _buttons(self, lay)
+        lay.addWidget(QLabel("Press Shift+Enter to start a new line."))
 
         is_dir = text.is_directive if text else directive
         (self.directive if is_dir else self.comment).setChecked(True)
@@ -70,13 +124,9 @@ class TextDialog(QDialog):
         self.size.setCurrentIndex(text.size if text else 2)
         if text:
             self.edit.setPlainText(text.body)
+            self.edit.selectAll()
         self.edit.setFocus()
-
-    def keyPressEvent(self, ev):
-        if ev.key() == Qt.Key_M and ev.modifiers() & Qt.ControlModifier:
-            self.edit.insertPlainText("\n")
-            return
-        super().keyPressEvent(ev)
+        popup_at_cursor(self)
 
     def result_text(self, x=0, y=0) -> asc.Text:
         body = self.edit.toPlainText().strip("\n").replace("\n", "\\n")
@@ -87,39 +137,94 @@ class TextDialog(QDialog):
 
 # ---------------------------------------------------------------- net label
 
+def _flag_glyph(kind):
+    """Small pictures next to the Net Name choices: GND, COM and a named label."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+    pm = QPixmap(40, 26)
+    pm.fill(QColor("#c0c0c0"))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor("#0000ff"))
+    pen.setWidthF(1.2)
+    p.setPen(pen)
+    if kind == "gnd":
+        p.drawLine(QPointF(20, 3), QPointF(20, 9))
+        p.drawPolyline([QPointF(6, 9), QPointF(34, 9), QPointF(20, 21), QPointF(6, 9)])
+    elif kind == "com":
+        p.drawLine(QPointF(20, 3), QPointF(20, 21))
+        p.drawPolyline([QPointF(10, 11), QPointF(20, 21), QPointF(30, 11)])
+    else:
+        p.setPen(QColor("#000000"))
+        f = p.font()
+        f.setBold(True)
+        f.setPixelSize(11)
+        p.setFont(f)
+        p.drawText(pm.rect().adjusted(0, -4, 0, 0), Qt.AlignHCenter | Qt.AlignTop, "???")
+        p.setPen(pen)
+        p.drawRect(17, 16, 6, 6)
+    p.end()
+    return pm
+
+
 class NetLabelDialog(QDialog):
-    """'Net Name' dialog (F4)."""
+    """'Net Name' dialog (N), laid out like LTspice's: GND, COM or a name, and a port type."""
+    PORTS = [("None", None), ("Input", "In"), ("Output", "Out"), ("BiDirect", "BiDir")]
 
     def __init__(self, parent=None, flag: asc.Flag | None = None):
         super().__init__(parent)
         self.setWindowTitle("Net Name")
-        lay = QVBoxLayout(self)
-        self.name = QComboBox()
-        self.name.setEditable(True)
-        lay.addWidget(self.name)
-        kind = QGroupBox("Port Type")
-        gl = QGridLayout(kind)
+        grid = QGridLayout(self)
         self.group = QButtonGroup(self)
         self.opts = {}
-        for i, (key, label) in enumerate([("gnd", "GND(global node 0)"), ("com", "COM"),
-                                          ("none", "None"), ("In", "Input"),
-                                          ("Out", "Output"), ("BiDir", "Bi-Direct.")]):
+        for row, (key, label) in enumerate([("gnd", "GND(global node 0)"), ("com", "COM")]):
+            pic = QLabel()
+            pic.setPixmap(_flag_glyph(key))
+            grid.addWidget(pic, row, 0)
             rb = QRadioButton(label)
             self.group.addButton(rb)
             self.opts[key] = rb
-            gl.addWidget(rb, i // 2, i % 2)
-        lay.addWidget(kind)
-        _buttons(self, lay)
+            grid.addWidget(rb, row, 1, 1, 2)
+        pic = QLabel()
+        pic.setPixmap(_flag_glyph("name"))
+        grid.addWidget(pic, 2, 0)
+        self.name = QComboBox()
+        self.name.setEditable(True)
+        self.name.setMinimumWidth(130)
+        grid.addWidget(self.name, 2, 1, 1, 2)
+        grid.addWidget(QLabel("Port Type:"), 3, 0, 1, 2, Qt.AlignRight)
+        self.port = QComboBox()
+        self.port.addItems([p for p, _ in self.PORTS])
+        grid.addWidget(self.port, 3, 2)
+        row = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        grid.addLayout(row, 4, 0, 1, 3)
+        # a hidden "named" choice so that typing a name clears GND/COM
+        self.opts["none"] = QRadioButton()
+        self.group.addButton(self.opts["none"])
         self.opts["none"].setChecked(True)
+        self.name.editTextChanged.connect(lambda t: t and self.opts["none"].setChecked(True))
         if flag:
             if flag.name == "0":
                 self.opts["gnd"].setChecked(True)
+            elif flag.name.upper() == "COM":
+                self.opts["com"].setChecked(True)
             else:
                 self.name.setEditText(flag.name)
-                if flag.iopin in self.opts:
-                    self.opts[flag.iopin].setChecked(True)
-        self.opts["gnd"].toggled.connect(lambda on: on and self.name.setEditText("0"))
-        self.opts["com"].toggled.connect(lambda on: on and self.name.setEditText("COM"))
+                self.opts["none"].setChecked(True)
+                idx = next((i for i, (_, k) in enumerate(self.PORTS) if k == flag.iopin), 0)
+                self.port.setCurrentIndex(idx)
+        self.opts["gnd"].toggled.connect(lambda on: on and self.name.setEditText(""))
+        self.opts["com"].toggled.connect(lambda on: on and self.name.setEditText(""))
+        self.name.setFocus()
+        self.name.lineEdit().selectAll()
+        popup_at_cursor(self)
 
     def set_names(self, names):
         cur = self.name.currentText()
@@ -130,22 +235,126 @@ class NetLabelDialog(QDialog):
         name = self.name.currentText().strip()
         if self.opts["gnd"].isChecked():
             name = "0"
+        elif self.opts["com"].isChecked():
+            name = "COM"
         flag.name = name or "N"
-        flag.iopin = next((k for k in ("In", "Out", "BiDir") if self.opts[k].isChecked()), None)
+        flag.iopin = self.PORTS[self.port.currentIndex()][1] if name not in ("0", "COM") else None
 
 
 # ---------------------------------------------------------------- component editors
 
+_PARAM_RE = re.compile(r'(\w+)\s*=\s*("[^"]*"|\S+)')
+
+
 def _split_value(v: str):
-    """'10K tol=1 pwr=.25' -> ('10K', {'tol': '1', 'pwr': '.25'})"""
-    toks = re.sub(r"\s*=\s*", "=", v).split()
-    base = [t for t in toks if "=" not in t]
-    params = dict(t.split("=", 1) for t in toks if "=" in t)
+    """'10K tol=1 pwr=.25 mfg="Würth Elektronik"' -> ('10K', {'tol': '1', ..., 'mfg': 'Würth Elektronik'})"""
+    params = {k: val.strip('"') for k, val in _PARAM_RE.findall(v)}
+    base = _PARAM_RE.sub("", v).split()
     return " ".join(base), params
 
 
+class PartPicker(QDialog):
+    """'Select Resistor/Capacitor/Inductor': LTspice's table of real parts (lib/cmp/standard_*.db)."""
+    TABLES = {
+        "R": ("standard_res.db", "Resistor", "R", "Ω",
+              [("R", "R"), ("Mfg", "Mfg"), ("Part No.", "Part No."), ("Power", "pwr"), ("Tolerance", "tol")]),
+        "C": ("standard_cap.db", "Capacitor", "C", "F",
+              [("C", "C"), ("Mfg", "Mfg"), ("Type", "Type"), ("Part No.", "Part No."), ("Voltage", "V"),
+               ("Irms", "Irms"), ("Rser", "Rser"), ("Lser", "Lser")]),
+        "L": ("standard_ind.db", "Inductor", "L", "H",
+              [("L", "L"), ("Mfg", "Mfg"), ("Part No.", "Part No."), ("Ipk", "Ipk"), ("Rser", "Rser"),
+               ("Rpar", "Rpar"), ("Cpar", "Cpar")]),
+    }
+
+    def __init__(self, parent, kind: str, value: str = ""):
+        super().__init__(parent)
+        from .. import config
+        from ..sim.spicenum import fmt, parse
+        self._fmt = fmt
+        fname, table, vcol, self.unit, self.cols = self.TABLES[kind]
+        self.setWindowTitle(f"Select {table}")
+        self.rows = []
+        db = config.CMP_DIR / fname
+        try:
+            import sqlite3
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            names = ", ".join(f'"{c}"' for c, _ in self.cols)
+            self.rows = list(con.execute(f'SELECT {names} FROM "{table}" ORDER BY "{vcol}"'))
+            con.close()
+        except Exception:  # noqa: BLE001 - no database: show an empty table
+            self.rows = []
+        lay = QGridLayout(self)
+        show_all = QPushButton("Show All")
+        lay.addWidget(show_all, 0, 0)
+        lay.addWidget(QLabel("Part No.:"), 0, 1)
+        self.part = QLineEdit()
+        lay.addWidget(self.part, 0, 2)
+        filt = QPushButton("Filter")
+        lay.addWidget(filt, 0, 3)
+        lay.addLayout(_ok_cancel_column(self), 0, 4, 2, 1)
+        self.table = QTableWidget(0, len(self.cols))
+        self.table.setHorizontalHeaderLabels([c for c, _ in self.cols])
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.doubleClicked.connect(self.accept)
+        self.table.verticalHeader().setDefaultSectionSize(self.fontMetrics().height() + 2)
+        self.table.setShowGrid(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.table, 1, 0, 1, 4)
+        show_all.clicked.connect(lambda: (self.part.clear(), self._fill()))
+        filt.clicked.connect(self._fill)
+        self.part.returnPressed.connect(self._fill)
+        self.resize(640, 360)
+        self.target = parse(value) if value else None
+        self._fill()
+        popup_at_cursor(self)
+
+    def _cell(self, i, v):
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            if i == 0:
+                return self._fmt(v, "", 3)
+            return f"{v:.6g}"
+        return str(v)
+
+    def _fill(self):
+        q = self.part.text().strip().lower()
+        rows = [r for r in self.rows if not q or q in str(r[[c for c, _ in self.cols].index("Part No.")] or "").lower()]
+        self.shown = rows
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, v in enumerate(row):
+                self.table.setItem(r, c, QTableWidgetItem(self._cell(c, v)))
+        # start at the part's present value, like LTspice
+        start = 0
+        if self.target is not None:
+            start = next((k for k, row in enumerate(rows) if row[0] is not None and row[0] >= self.target * 0.999), 0)
+        if rows:
+            self.table.selectRow(start)
+            self._scroll_selected()
+
+    def _scroll_selected(self):
+        r = self.table.currentRow()
+        if r >= 0 and self.isVisible():
+            self.table.scrollToItem(self.table.item(r, 0), QTableWidget.PositionAtTop)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._scroll_selected()
+
+    def chosen(self) -> dict | None:
+        r = self.table.currentRow()
+        if r < 0 or r >= len(self.shown):
+            return None
+        return {key: v for (_, key), v in zip(self.cols, self.shown[r])}
+
+
 class RLCDialog(QDialog):
-    """Resistor / Capacitor / Inductor quick editors."""
+    """Resistor / Capacitor / Inductor editors, laid out like LTspice's: part info and a
+    'Select ...' button on top, OK/Cancel at the right, the properties below."""
     FIELDS = {
         "R": ("Resistor", [("Resistance[Ω]:", "value"), ("Tolerance[%]:", "tol"),
                            ("Power Rating[W]:", "pwr")]),
@@ -164,33 +373,121 @@ class RLCDialog(QDialog):
     def __init__(self, parent, inst: asc.SymbolInst, kind: str, sym=None):
         super().__init__(parent)
         title, fields = self.FIELDS[kind]
+        self.kind = kind
         self.setWindowTitle(f"{title} - {inst.name}")
         self.inst = inst
-        lay = QVBoxLayout(self)
-        form = QFormLayout()
         value = inst.attrs.get("Value", sym.attrs.get("Value", "") if sym else "")
         base, params = _split_value(value + " " + inst.attrs.get("SpiceLine", ""))
+        self.info = {k: params.pop(k, "") for k in ("mfg", "pn", "type")}
+        outer = QVBoxLayout(self)
+        top = QHBoxLayout()
+        info = QGridLayout()
+        self.info_labels = {}
+        rows = [("Manufacturer:", "mfg"), ("Part Number:", "pn")] + ([("Type:", "type")] if kind == "C" else [])
+        for r, (label, key) in enumerate(rows):
+            info.addWidget(QLabel(label), r, 0, Qt.AlignRight)
+            lab = QLabel(self.info[key] or "--------")
+            self.info_labels[key] = lab
+            info.addWidget(lab, r, 1)
+        sel = QPushButton(f"Select {title}")
+        sel.clicked.connect(self._select)
+        info.addWidget(sel, len(rows), 0, 1, 2, Qt.AlignLeft)
+        top.addLayout(info, 1)
+        top.addLayout(_ok_cancel_column(self))
+        outer.addLayout(top)
+        box = QGroupBox(f"{title} Properties")
+        form = QFormLayout(box)
+        form.setLabelAlignment(Qt.AlignRight)
         self.edits = {}
         for label, key in fields:
             e = QLineEdit(base if key == "value" else params.pop(key, ""))
+            e.setMaximumWidth(90)
             form.addRow(label, e)
             self.edits[key] = e
         self.extra = params
-        lay.addLayout(form)
-        self.show_value = QCheckBox("Show value on schematic")
-        self.show_value.setChecked(True)
-        lay.addWidget(self.show_value)
-        _buttons(self, lay)
+        outer.addWidget(box)
+        self.edits["value"].selectAll()
+        self.edits["value"].setFocus()
+        popup_at_cursor(self)
+
+    def _select(self):
+        dlg = PartPicker(self, self.kind, self.edits["value"].text().strip())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        row = dlg.chosen()
+        if not row:
+            return
+        from ..sim.spicenum import fmt
+        self.edits["value"].setText(fmt(row[{"R": "R", "C": "C", "L": "L"}[self.kind]], "", 3))
+        for key, e in self.edits.items():
+            if key != "value" and key in row:
+                v = row[key]
+                e.setText("" if v in (None, 0, 0.0) else f"{v:.6g}")
+        self.info = {"mfg": row.get("Mfg") or "", "pn": row.get("Part No.") or "",
+                     "type": row.get("Type") or ""}
+        for k, lab in self.info_labels.items():
+            lab.setText(self.info[k] or "--------")
 
     def apply(self):
         self.inst.attrs["Value"] = self.edits["value"].text().strip()
         spice = [f"{k}={e.text().strip()}" for k, e in self.edits.items()
                  if k != "value" and e.text().strip()]
         spice += [f"{k}={v}" for k, v in self.extra.items()]
+        spice += [f'{k}="{v}"' for k, v in self.info.items() if v]
         if spice:
             self.inst.attrs["SpiceLine"] = " ".join(spice)
         else:
             self.inst.attrs.pop("SpiceLine", None)
+
+
+class SimpleSourceDialog(QDialog):
+    """The small editor LTspice opens for a plain DC source: value, series resistance, and
+    'Advanced' for the full function editor."""
+
+    def __init__(self, parent, inst: asc.SymbolInst, current=False):
+        super().__init__(parent)
+        self.inst = inst
+        self.advanced = False
+        unit = "A" if current else "V"
+        self.setWindowTitle(f"{'Current' if current else 'Voltage'} Source - {inst.name}")
+        lay = QHBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        value = (inst.attrs.get("Value", "") + " " + inst.attrs.get("Value2", "")).strip()
+        rser = re.search(r"(?i)\bRser\s*=\s*(\S+)", value)
+        dc = re.sub(r"(?i)\bRser\s*=\s*\S+", "", value)
+        dc = re.sub(r"(?i)\bDC\b", "", dc).strip()
+        self.dc = QLineEdit(dc)
+        self.rser = QLineEdit(rser.group(1) if rser else "")
+        form.addRow(f"DC value[{unit}]:", self.dc)
+        if not current:
+            form.addRow("Series Resistance[Ω]:", self.rser)
+        lay.addLayout(form)
+        adv = QPushButton("Advanced")
+        adv.clicked.connect(self._advanced)
+        lay.addLayout(_ok_cancel_column(self, [adv]))
+        self.dc.selectAll()
+        self.dc.setFocus()
+        popup_at_cursor(self)
+
+    @staticmethod
+    def handles(inst: asc.SymbolInst) -> bool:
+        """True when the source is just a DC value (maybe with Rser), as LTspice requires."""
+        v = (inst.attrs.get("Value", "") + " " + inst.attrs.get("Value2", "")).strip()
+        v = re.sub(r"(?i)\bRser\s*=\s*\S+", "", v)
+        v = re.sub(r"(?i)^\s*DC\b", "", v).strip()
+        return len(v.split()) <= 1 and "(" not in v
+
+    def _advanced(self):
+        self.advanced = True
+        self.accept()
+
+    def apply(self):
+        parts = [self.dc.text().strip() or "0"]
+        if self.rser.text().strip():
+            parts.append(f"Rser={self.rser.text().strip()}")
+        self.inst.attrs["Value"] = " ".join(parts)
+        self.inst.attrs.pop("Value2", None)
 
 
 class VoltageSourceDialog(QDialog):
@@ -417,8 +714,18 @@ class SimCommandDialog(QDialog):
                              ("Stop frequency:", "")], []),
         ("DC Transfer", ".tf", [("Output:", ""), ("Source:", "")], []),
         ("DC op pnt", ".op", [], []),
+        # ngspice extensions, not in LTspice
+        ("Pole-Zero", ".pz", [("Input node:", ""), ("Input reference node:", ""), ("Output node:", ""),
+                              ("Output reference node:", ""),
+                              ("Transfer function:", "combo:Voltage gain,Transimpedance"),
+                              ("Find:", "combo:Poles and zeros,Poles only,Zeros only")], []),
+        ("Distortion", ".disto", [("Type of sweep:", "combo:Decade,Octave,Linear"),
+                                  ("Number of points per decade:", ""), ("Start frequency:", ""),
+                                  ("Stop frequency:", ""), ("F2/F1 (optional):", "")], []),
     ]
-    SWEEP = {"Octave": "oct", "Decade": "dec", "Linear": "lin", "List": "list"}
+    SWEEP = {"Octave": "oct", "Decade": "dec", "Linear": "lin", "List": "list",
+             "Voltage gain": "vol", "Transimpedance": "cur",
+             "Poles and zeros": "pz", "Poles only": "pol", "Zeros only": "zer"}
 
     def __init__(self, parent=None, current: str = ""):
         super().__init__(parent)
@@ -434,8 +741,16 @@ class SimCommandDialog(QDialog):
                                  ".dc": "Compute the DC operating point of a circuit while stepping independent sources and treating capacitances as open circuits and inductances as short circuits.",
                                  ".noise": "Perform a frequency domain small signal noise analysis.",
                                  ".tf": "Find the DC small-signal transfer function.",
-                                 ".op": "Find the DC operating point solution using capacitances as open circuits and inductances as short circuits."}[cmd]))
+                                 ".op": "Find the DC operating point solution using capacitances as open circuits and inductances as short circuits.",
+                                 ".pz": "Find the poles and zeros of a transfer function (ngspice only; LTspice has no .pz).",
+                                 ".disto": "Small-signal 2nd and 3rd harmonic distortion; sources need DISTOF1/DISTOF2 "
+                                           "(ngspice only; LTspice has no .disto)."}[cmd]))
+            wl.itemAt(0).widget().setAlignment(Qt.AlignHCenter)
+            wl.itemAt(0).widget().setWordWrap(True)
+            # LTspice: right-aligned labels with short fields, and "label: [x]" check boxes
             form = QFormLayout()
+            form.setLabelAlignment(Qt.AlignRight)
+            form.setFormAlignment(Qt.AlignHCenter)
             edits = []
             for label, spec in fields:
                 if spec.startswith("combo:"):
@@ -445,26 +760,37 @@ class SimCommandDialog(QDialog):
                 else:
                     e = QLineEdit()
                     e.textChanged.connect(self._update)
+                e.setFixedWidth(110)
                 form.addRow(label, e)
                 edits.append(e)
-            wl.addLayout(form)
             boxes = []
             for c in checks:
-                cb = QCheckBox(c)
+                cb = QCheckBox()
                 cb.toggled.connect(self._update)
-                wl.addWidget(cb)
+                form.addRow(c + ":", cb)
                 boxes.append(cb)
+            wl.addLayout(form)
             wl.addStretch()
             self.fields.append((cmd, edits, boxes))
             self.tabs.addTab(w, title)
         self.tabs.currentChanged.connect(self._update)
         lay.addWidget(self.tabs)
-        lay.addWidget(QLabel("Syntax:"))
+        self.syntax = QLabel()
+        lay.addWidget(self.syntax)
         self.cmd = QLineEdit()
         self.cmd.setReadOnly(True)
         lay.addWidget(self.cmd)
-        _buttons(self, lay)
-        self.setMinimumWidth(560)
+        row = QHBoxLayout()
+        row.addStretch()
+        ok = QPushButton("OK")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+        self.setMinimumWidth(540)
         self._load(current)
         self._update()
 
@@ -505,8 +831,18 @@ class SimCommandDialog(QDialog):
                     e.setText(args[j])
                     j += 1
 
+    SYNTAX = {".tran": ".tran <Tstop> [<option> [<option>] ...]",
+              ".ac": ".ac <oct, dec, lin> <Nsteps> <StartFreq> <EndFreq>",
+              ".dc": ".dc <srcnam> <Vstart> <Vstop> <Vincr> [<srcnam2> <Vstart2> <Vstop2> <Vincr2>]",
+              ".noise": ".noise V(<out>[,<ref>]) <src> <oct, dec, lin> <Nsteps> <StartFreq> <EndFreq>",
+              ".tf": ".tf V(<node>[,<ref>]) <source>",
+              ".op": ".op",
+              ".pz": ".pz <in> <inref> <out> <outref> <vol | cur> <pz | pol | zer>",
+              ".disto": ".disto <dec | oct | lin> <Npoints> <Fstart> <Fstop> [<F2/F1>]"}
+
     def _update(self, *_):
         cmd, edits, boxes = self.fields[self.tabs.currentIndex()]
+        self.syntax.setText("Syntax:  " + self.SYNTAX.get(cmd, cmd))
         vals = []
         for e in edits:
             if isinstance(e, QComboBox):

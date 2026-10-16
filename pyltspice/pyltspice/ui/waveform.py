@@ -2,7 +2,7 @@
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QColor, QPen
+from PySide6.QtGui import QAction, QColor, QFont, QPen
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QMenu, QSplitter, QVBoxLayout, QWidget)
 
@@ -11,6 +11,15 @@ from ..sim.vectors import VectorSet, unit_of
 from .theme import TRACE_COLORS, theme
 
 pg.setConfigOptions(antialias=True)
+
+GRID_ALPHA = 0.55      # grid lines in the axis color at this alpha come out near LTspice's grey grid
+
+
+def plot_font():
+    """LTspice default waveform font: Arial 10 pt, bold (Settings > Waveforms)."""
+    f = QFont("Arial", 10)
+    f.setBold(True)
+    return f
 
 
 class EngAxis(pg.AxisItem):
@@ -23,15 +32,38 @@ class EngAxis(pg.AxisItem):
         self.enableAutoSIPrefix(False)
 
     def tickStrings(self, values, scale, spacing):
+        if not self.is_log:
+            return self._linear_ticks(values, spacing)
         out = []
         for v in values:
-            if self.is_log:
-                # label decades only, like LTspice
-                if abs(v - round(v)) > 1e-6:
-                    out.append("")
-                    continue
-                v = 10 ** round(v)
-            out.append(fmt(v, self.unit, 3))
+            # label decades only, like LTspice
+            if abs(v - round(v)) > 1e-6:
+                out.append("")
+                continue
+            out.append(fmt(10 ** round(v), self.unit, 3))
+        return out
+
+    _PREFIX = {12: "T", 9: "G", 6: "M", 3: "K", 0: "", -3: "m", -6: "µ", -9: "n", -12: "p", -15: "f"}
+
+    def _linear_ticks(self, values, spacing):
+        """LTspice labels every tick of an axis with one prefix and one precision:
+        0ms 3ms 6ms ..., 0.5V 1.0V ... 5.0V."""
+        import math
+        big = max((abs(v) for v in values), default=0.0) or abs(spacing) or 1.0
+        exp = int(math.floor(math.log10(big) / 3) * 3)
+        exp = max(-15, min(12, exp))
+        scale = 10.0 ** exp
+        step = abs(spacing) / scale if spacing else 1.0
+        dec = max(0, -int(math.floor(math.log10(step) + 1e-9))) if step > 0 else 0
+        prefix = self._PREFIX[exp]
+        if prefix == "M" and not self.unit:
+            prefix = "Meg"
+        out = []
+        for v in values:
+            x = v / scale
+            if abs(x) < step * 1e-6:
+                x = 0.0
+            out.append(f"{x:.{dec}f}{prefix}{self.unit}")
         return out
 
 
@@ -140,6 +172,7 @@ class Pane(QWidget):
         self.labels.linkActivated.connect(self._label_clicked)
         bg = theme().color("plot_background").name()
         self.labels.setStyleSheet(f"background:{bg}; padding:2px;")
+        self.labels.setFont(plot_font())
         lay.addWidget(self.labels)
         is_ac = viewer.is_ac
         xunit = "Hz" if is_ac else ("s" if viewer.analysis == "tran" else "V")
@@ -147,15 +180,17 @@ class Pane(QWidget):
         self.left = EngAxis("left", "dB" if is_ac else "")
         self.plot = pg.PlotWidget(axisItems={"bottom": self.bottom, "left": self.left},
                                   background=theme().color("plot_background"))
-        self.plot.showGrid(x=True, y=True, alpha=0.35)
+        self.plot.showGrid(x=viewer.show_grid, y=viewer.show_grid, alpha=GRID_ALPHA)
         pi = self.plot.getPlotItem()
         pi.setMenuEnabled(False)
         pi.hideButtons()
         pi.getViewBox().setMouseMode(pg.ViewBox.RectMode)
+        pi.getViewBox().setBorder(pg.mkPen(theme().color("plot_axis")))   # LTspice frames the plot area
         for ax in ("left", "bottom"):
             a = pi.getAxis(ax)
             a.setPen(theme().color("plot_axis"))
             a.setTextPen(theme().color("plot_text"))
+            a.setStyle(tickFont=plot_font())
         self.phase_vb = None          # right-hand axis: phase (AC) or a second unit
         self.right = None
         self.left_unit = None
@@ -163,6 +198,18 @@ class Pane(QWidget):
             pi.setLogMode(x=True, y=False)
             if viewer.show_phase:
                 self._ensure_right("°")
+        # an empty pane already spans the simulated range, without Y labels (as in LTspice)
+        try:
+            x = np.real(viewer.x)
+            if len(x) > 1:
+                lo, hi = float(np.min(x)), float(np.max(x))
+                if is_ac and lo > 0:
+                    lo, hi = np.log10(lo), np.log10(hi)
+                if hi > lo:
+                    pi.setXRange(lo, hi, padding=0)
+        except Exception:  # noqa: BLE001 - any odd x vector just keeps the default range
+            pass
+        self.left.setStyle(showValues=False)
         self.plot.scene().sigMouseMoved.connect(self._mouse_moved)
         self.plot.setContextMenuPolicy(Qt.CustomContextMenu)
         self.plot.customContextMenuRequested.connect(lambda p: viewer.context_menu(self, self.plot.mapToGlobal(p)))
@@ -181,6 +228,7 @@ class Pane(QWidget):
         self.phase_vb.setXLink(pi)
         self.right.setPen(theme().color("plot_axis"))
         self.right.setTextPen(theme().color("plot_text"))
+        self.right.setStyle(tickFont=plot_font())
         pi.getViewBox().sigResized.connect(self._sync_phase)
         self._sync_phase()
 
@@ -210,6 +258,7 @@ class Pane(QWidget):
         self.labels.setText("&nbsp;&nbsp;&nbsp;".join(parts) or "&nbsp;")
 
     def add_trace(self, trace: Trace, x, y, steps):
+        self.left.setStyle(showValues=True)
         pi = self.plot.getPlotItem()
         pen = QPen(trace.color)
         pen.setCosmetic(True)
@@ -288,6 +337,7 @@ class WaveformViewer(QWidget):
         self.color_i = 0
         self.cursors = []
         self.readout = None
+        self.show_grid = False      # LTspice: Plot Settings > Grid is off by default
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.split = QSplitter(Qt.Vertical)
@@ -310,6 +360,11 @@ class WaveformViewer(QWidget):
         self.split.addWidget(p)
         self.active = p
         return p
+
+    def set_grid(self, on):
+        self.show_grid = on
+        for p in self.panes:
+            p.plot.showGrid(x=on, y=on, alpha=GRID_ALPHA)
 
     def _set_active(self, pane):
         self.active = pane
@@ -398,8 +453,8 @@ class WaveformViewer(QWidget):
         m.addSeparator()
         m.addAction("Zoom to Fit", self.autorange)
         m.addAction("Save Plot Settings", self.save_plot_settings.emit)
-        grid = QAction("Grid", m, checkable=True, checked=True)
-        grid.toggled.connect(lambda on: [p.plot.showGrid(x=on, y=on, alpha=0.35) for p in self.panes])
+        grid = QAction("Grid", m, checkable=True, checked=self.show_grid)
+        grid.toggled.connect(self.set_grid)
         m.addAction(grid)
         m.exec(global_pos)
 

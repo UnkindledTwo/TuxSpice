@@ -224,3 +224,44 @@ def test_relaxation_oscillator_swings_rail_to_rail(tmp_path):
     assert res.ok, res.errors
     v = VectorSet(res.main_plot()).get("V(out)")
     assert v.max() > 13 and v.min() < -13
+
+
+@needs_ngspice
+def test_counter_divides_clock(tmp_path):
+    """COUNTER cycles=4: Phi1 (pin 7) high for 2 of every 4 clock periods, Phi2 its complement."""
+    net = ("* counter\nV1 clk 0 PULSE(0 1 0 1n 1n 0.5m 1m)\n"
+           "A1 clk 0 0 0 0 p2 p1 0 COUNTER cycles=4\nR1 p1 0 1k\nR2 p2 0 1k\n"
+           ".tran 0 9m 0 10u\n.end\n")
+    r = Simulator(net, tmp_path / "c").run()
+    assert r.ok, r.errors
+    p = r.main_plot()
+    v = VectorSet(p)
+    t = np.real(p.x)
+    p1, p2 = np.real(v.get("V(p1)")), np.real(v.get("V(p2)"))
+    at = lambda arr, ms: arr[np.searchsorted(t, ms * 1e-3)]
+    assert [round(at(p1, ms)) for ms in (0.25, 1.25, 2.25, 3.25, 4.25, 6.25)] == [1, 1, 0, 0, 1, 0]
+    assert all(round(at(p1, ms) + at(p2, ms)) == 1 for ms in (0.25, 2.25, 4.25, 6.25))
+
+
+@needs_ngspice
+def test_pole_zero_rc(tmp_path):
+    """.pz (ngspice extension): an RC low-pass has one real pole at -1/RC."""
+    net = "* rc\nV1 in 0 AC 1\nR1 in out 1k\nC1 out 0 1u\n.pz in 0 out 0 vol pz\n.end\n"
+    r = Simulator(net, tmp_path / "pz").run()
+    assert r.ok, r.errors
+    p = r.main_plot()
+    assert p.analysis == "pz"
+    poles = [complex(p.data[v.index][0]) for v in p.variables if v.name.startswith("v(pole")]
+    assert len(poles) == 1 and abs(poles[0].real + 1000) < 1e-6 and abs(poles[0].imag) < 1e-9
+
+
+@needs_ngspice
+def test_distortion_two_harmonics(tmp_path):
+    """.disto (ngspice extension) returns 2nd and 3rd harmonic result sets against frequency."""
+    net = ("* amp\nV1 in 0 DC 0.7 AC 1 DISTOF1 1\nR1 in b 1k\nQ1 c b 0 qn\nRC vcc c 1k\n"
+           "VCC vcc 0 5\n.model qn npn\n.disto dec 5 1k 1Meg\n.end\n")
+    r = Simulator(net, tmp_path / "d").run()
+    assert r.ok, r.errors
+    sets = [p for p in r.plots if p.analysis == "disto"]
+    assert [s.plotname.split("-")[-1].strip() for s in sets] == ["2nd harmonic", "3rd harmonic"]
+    assert sets[0].variables[0].name == "frequency" and sets[0].is_complex

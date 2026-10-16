@@ -5,12 +5,15 @@ from PySide6.QtWidgets import (QColorDialog, QDialog, QDialogButtonBox, QGridLay
 
 from .theme import DEFAULTS, theme
 
+# names and order as in LTspice's Color Preferences dialog
 LABELS = {
-    "background": "Background", "grid": "Grid", "wire": "Wires", "junction": "Junctions",
-    "component": "Components", "attribute": "Component attributes", "flag": "Net labels",
-    "directive": "SPICE directives", "comment": "Comments", "graphic": "Graphics",
-    "selected": "Selected / sprited", "plot_background": "Waveform background",
-    "plot_axis": "Waveform axes", "plot_text": "Waveform text",
+    "wire": "Wires", "junction": "Junctions", "component": "Component body",
+    "flag_graphic": "Graphic Flag", "component_fill": "Component Fill-in", "attribute": "Component Text",
+    "flag": "Flag Text", "directive": "SPICE Directive Text", "comment": "Comment Text",
+    "unconnected": "Unconnected Pin", "selected": "Highlight Color", "grid": "Grid",
+    "graphic": "Graphic Annotation", "background": "Background",
+    "plot_axis": "Waveform Axis", "plot_inactive_axis": "Waveform Inactive Axis",
+    "plot_grid": "Waveform Grid", "plot_background": "Waveform Background",
 }
 
 

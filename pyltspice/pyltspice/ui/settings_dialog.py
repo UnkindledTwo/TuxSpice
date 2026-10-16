@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
 DEFAULTS = {
     "drafting/ortho_wires": True,
     "drafting/reverse_wheel": False,
-    "drafting/mark_unconnected": False,
+    "drafting/mark_unconnected": True,     # LTspice: on by default
     "view/grid": False,
     "drafting/undo_size": 100,
 }

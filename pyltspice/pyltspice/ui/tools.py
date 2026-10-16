@@ -12,6 +12,17 @@ from ..model.netlist import symbol_pins
 from .theme import theme
 
 
+ROTATE_HINT = "Type Ctrl+R to rotate or Ctrl+E to mirror."   # LTspice status text
+
+
+def _box_pen():
+    """LTspice draws selection boxes as a thin black dotted rectangle."""
+    pen = QPen(Qt.black)
+    pen.setCosmetic(True)
+    pen.setStyle(Qt.DotLine)
+    return pen
+
+
 class Tool:
     cursor = Qt.ArrowCursor
     status = ""
@@ -84,6 +95,18 @@ class IdleTool(Tool):
             else:
                 self.win.context_menu(ev.globalPosition().toPoint())
             return True
+        if ev.button() == Qt.LeftButton and not self.win.probe_active():
+            # LTspice 26: left-clicking an unconnected pin starts a wire from it
+            p = self.view.snap(pos)
+            pin = (int(p.x()), int(p.y()))
+            near = (self.view.mapFromScene(p) - self.view.mapFromScene(pos)).manhattanLength() <= 8
+            if near and self.scene.conn is not None and pin in self.scene.conn.unconnected:
+                wire = WireTool(self.win)
+                self.win.set_tool(wire)
+                wire.start = p
+                wire.horizontal_first = None
+                wire._locked_dir = False
+                return True
         if ev.button() == Qt.LeftButton and self.win.probe_active():
             objs = self.scene.model_items_at(pos)
             if objs or self.scene.conn.net_at(*self._snap(pos)):
@@ -116,10 +139,13 @@ class IdleTool(Tool):
             objs = self.scene.model_items_at(pos)
             if objs and isinstance(objs[0], asc.SymbolInst):
                 view.viewport().setCursor(self.win.cursors["current"])
+                self.win.status.emit(self.win.probe_hint(objs[0]))
             elif objs and isinstance(objs[0], (asc.Wire, asc.Flag)):
                 view.viewport().setCursor(self.win.cursors["voltage"])
+                self.win.status.emit(self.win.probe_hint(objs[0]))
             else:
-                view.viewport().setCursor(self.cursor)
+                # LTspice shows a crosshair over a schematic that has simulation results
+                view.viewport().setCursor(self.win.cursors["cross"])
 
     def double_click(self, view, ev):
         objs = self.scene.model_items_at(self.scene_pos(ev), (asc.SymbolInst,))
@@ -158,11 +184,54 @@ class PlaceTool(Tool):
                 self.scene.removeItem(it)
         self.items = []
 
+    status = ROTATE_HINT
+
     def _new_sprite(self):
         self.objs = self.factory()
         for op in self.orient_ops:
             op(self.objs, 0, 0)
+        self._relayout()
+        for o in self.objs:
+            # the sprite already shows the name it will get (R1, R2...)
+            if isinstance(o, asc.SymbolInst) and not o.attrs.get("InstName"):
+                sym = self.doc.lib.get(o.symbol, self.doc.local_dirs)
+                o.attrs = {"InstName": ed.next_name(self.doc.sch, ed.name_prefix(sym, o)), **o.attrs}
         self._make_items()
+
+    def _relayout(self):
+        for o in self.objs:
+            if isinstance(o, asc.SymbolInst):
+                ed.relayout_windows(o, self.doc.lib.get(o.symbol, self.doc.local_dirs))
+
+    def _grab_offset(self) -> QPointF:
+        """LTspice carries a new part by its middle: the origin is snapped to the grid point
+        that puts the part's centre nearest the cursor."""
+        pts = []
+        for o in self.objs:
+            if isinstance(o, asc.SymbolInst):
+                sym = self.doc.lib.get(o.symbol, self.doc.local_dirs)
+                if sym is not None:
+                    x0, y0, x1, y1 = sym.bbox()
+                    from ..model.geometry import apply, orient_matrix
+                    m = orient_matrix(o.orient)
+                    for x, y in ((x0, y0), (x1, y1)):
+                        rx, ry = apply(m, x, y)
+                        pts.append((o.x + rx, o.y + ry))
+                    continue
+            pts += ed.points_of(o)
+        if not pts:
+            return QPointF()
+        xs = [x for x, _ in pts]
+        ys = [y for _, y in pts]
+        return QPointF((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+
+    def _pin_points(self):
+        out = []
+        for o in self.objs:
+            if isinstance(o, asc.SymbolInst):
+                sym = self.doc.lib.get(o.symbol, self.doc.local_dirs)
+                out += [QPointF(*pr.point) for pr in symbol_pins(o, sym)]
+        return out
 
     def _make_items(self):
         self._clear_items()
@@ -175,7 +244,7 @@ class PlaceTool(Tool):
         self._follow()
 
     def _follow(self):
-        p = self.view.snap(self.mouse)
+        p = self.view.snap(self.mouse - self._grab_offset())
         for it in self.items:
             it.setPos(p)
 
@@ -190,10 +259,12 @@ class PlaceTool(Tool):
             return True
         if ev.button() != Qt.LeftButton:
             return False
-        p = self.view.snap(self.scene_pos(ev))
+        p = self.view.snap(self.scene_pos(ev) - self._grab_offset())
         self.doc.begin()
         for o in self.objs:
             ed.translate(o, int(p.x()), int(p.y()))
+            if isinstance(o, asc.SymbolInst):
+                o.attrs.pop("InstName", None)   # re-number in case the sheet changed meanwhile
             if isinstance(o, asc.SymbolInst) and not o.attrs.get("InstName"):
                 sym = self.doc.lib.get(o.symbol, self.doc.local_dirs)
                 o.attrs = {"InstName": ed.next_name(self.doc.sch, ed.name_prefix(sym, o)), **o.attrs}
@@ -208,24 +279,37 @@ class PlaceTool(Tool):
 
     def key(self, view, ev):
         ctrl = ev.modifiers() & Qt.ControlModifier
-        if ctrl and ev.key() == Qt.Key_R:
-            self.orient_ops.append(ed.rotate)
-            ed.rotate(self.objs, 0, 0)
-            self._make_items()
-            return True
-        if ctrl and ev.key() == Qt.Key_E:
-            self.orient_ops.append(ed.mirror)
-            ed.mirror(self.objs, 0, 0)
-            self._make_items()
+        if ctrl and ev.key() in (Qt.Key_R, Qt.Key_E):
+            self.orient(ev.key() == Qt.Key_E)
             return True
         return super().key(view, ev)
+
+    def orient(self, mirror=False):
+        """Ctrl+R / Ctrl+E (or the toolbar buttons) while carrying the new part."""
+        op = ed.mirror if mirror else ed.rotate
+        self.orient_ops.append(op)
+        op(self.objs, 0, 0)
+        self._relayout()
+        self._make_items()
+        self.view.viewport().update()
+
+    def paint_overlay(self, view, p):
+        # unconnected pins of the part being placed get LTspice's little squares
+        d = self.view.snap(self.mouse - self._grab_offset())
+        pen = QPen(theme().color("unconnected"))
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        for pt in self._pin_points():
+            c = pt + d
+            p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8))
 
 
 # ---------------------------------------------------------------- wires
 
 class WireTool(Tool):
-    cursor = Qt.CrossCursor
-    status = "Click to start a wire; right-click to cancel"
+    cursor = Qt.BlankCursor      # the full-view crosshair is the cursor, as in LTspice
+    status = ""
 
     def __init__(self, win):
         super().__init__(win)
@@ -245,7 +329,8 @@ class WireTool(Tool):
         if a.x() == b.x() or a.y() == b.y() or not self._ortho():
             return [(a, b)]
         if self.horizontal_first is None:
-            self.horizontal_first = abs(b.x() - a.x()) >= abs(b.y() - a.y())
+            # on a diagonal first move LTspice leaves vertically
+            self.horizontal_first = abs(b.x() - a.x()) > abs(b.y() - a.y())
         corner = QPointF(b.x(), a.y()) if self.horizontal_first else QPointF(a.x(), b.y())
         return [(a, corner), (corner, b)]
 
@@ -277,17 +362,27 @@ class WireTool(Tool):
         if self.start is None:
             self.start = p
             self.horizontal_first = None
+            self._locked_dir = False
             return True
         if p == self.start:
             return True
         connected = self._is_connection(p)     # check before adding the new segments
+        route = [(a, b) for a, b in self._route(self.start, p) if a != b]
+        if not connected and len(route) == 2:
+            # LTspice commits only the first leg of the L; the corner becomes the new start
+            # and the second leg stays live, so the next click can still bend it.
+            route = route[:1]
+            next_start, next_dir = route[0][1], route[0][0].y() == route[0][1].y()
+        else:
+            next_start, next_dir = (None if connected else p), None
         self.doc.begin()
-        for a, b in self._route(self.start, p):
-            if a != b:
-                self.doc.sch.items.append(asc.Wire(int(a.x()), int(a.y()), int(b.x()), int(b.y())))
+        for a, b in route:
+            self.doc.sch.items.append(asc.Wire(int(a.x()), int(a.y()), int(b.x()), int(b.y())))
         self.doc.commit("Draw Wire")
-        self.start = None if connected else p
-        self.horizontal_first = None
+        self.start = next_start
+        # after a horizontal leg the live wire leaves vertically (and vice versa)
+        self.horizontal_first = None if next_dir is None else not next_dir
+        self._locked_dir = next_dir is not None
         return True
 
     def move(self, view, ev):
@@ -295,7 +390,11 @@ class WireTool(Tool):
         if self.start is not None:
             d = self.view.snap(self.mouse) - self.start
             if self.horizontal_first is not None and abs(d.x()) < 1 and abs(d.y()) < 1:
-                self.horizontal_first = None
+                if not getattr(self, "_locked_dir", False):
+                    self.horizontal_first = None
+            elif self.horizontal_first is None and (abs(d.x()) >= 1 or abs(d.y()) >= 1):
+                # the first move away from the start point sets which leg comes first
+                self.horizontal_first = abs(d.x()) > abs(d.y())
         view.viewport().update()
 
     def key(self, view, ev):
@@ -309,13 +408,15 @@ class WireTool(Tool):
         cur = self.view.snap(self.mouse)
         pen = QPen(theme().color("wire"))
         pen.setCosmetic(True)
+        pen.setWidthF(2)             # the wire being drawn is bold until it is committed
         p.setPen(pen)
         if self.start is not None:
             for a, b in self._route(self.start, cur):
                 p.drawLine(QLineF(a, b))
         # crosshair cursor spanning the view, like LTspice
         r = view.mapToScene(view.viewport().rect()).boundingRect()
-        pen.setColor(theme().color("grid"))
+        pen.setWidthF(0)
+        pen.setColor(Qt.black)
         pen.setStyle(Qt.DotLine)
         p.setPen(pen)
         p.drawLine(QLineF(r.left(), cur.y(), r.right(), cur.y()))
@@ -345,12 +446,7 @@ class _BoxSelectTool(Tool):
         return True
 
     def move(self, view, ev):
-        super().move(view, ev)
-        if self.box_from is None:
-            objs = self.scene.model_items_at(self.mouse)[:1]
-            if objs != self.hover:
-                self.hover = objs
-                self.scene.set_highlight(objs)
+        super().move(view, ev)       # LTspice doesn't highlight what's under the cursor
         view.viewport().update()
 
     def release(self, view, ev):
@@ -372,15 +468,49 @@ class _BoxSelectTool(Tool):
 
     def paint_overlay(self, view, p):
         if self.box_from is not None:
-            pen = QPen(theme().color("selected"))
-            pen.setCosmetic(True)
-            pen.setStyle(Qt.DashLine)
-            p.setPen(pen)
+            p.setPen(_box_pen())
             p.setBrush(Qt.NoBrush)
             p.drawRect(QRectF(self.box_from, self.mouse).normalized())
 
     def deactivate(self):
         self.scene.set_highlight([])
+
+
+class ZoomAreaTool(Tool):
+    """View > Zoom Area: drag a box and zoom in on it, then return to idle."""
+    status = "Drag a box and zoom in"
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.cursor = win.cursors["zoom"]
+        self.box_from = None
+
+    def press(self, view, ev):
+        if ev.button() != Qt.LeftButton:
+            return super().press(view, ev)
+        self.box_from = self.scene_pos(ev)
+        return True
+
+    def move(self, view, ev):
+        super().move(view, ev)
+        if self.box_from is not None:
+            view.viewport().update()
+
+    def release(self, view, ev):
+        if self.box_from is None or ev.button() != Qt.LeftButton:
+            return
+        box = QRectF(self.box_from, self.scene_pos(ev)).normalized()
+        self.box_from = None
+        if box.width() > 2 and box.height() > 2:
+            view.remember_view()
+            view.fitInView(box, Qt.KeepAspectRatio)
+        self.exit()
+
+    def paint_overlay(self, view, p):
+        if self.box_from is not None:
+            p.setPen(_box_pen())
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(self.box_from, self.mouse).normalized())
 
 
 class DeleteTool(_BoxSelectTool):
@@ -403,7 +533,7 @@ class MoveTool(_BoxSelectTool):
     def __init__(self, win, mode="move"):
         super().__init__(win)
         self.mode = mode
-        self.cursor = win.cursors["drag" if mode == "drag" else "move"]
+        self.cursor = win.cursors[{"drag": "drag", "duplicate": "duplicate"}.get(mode, "move")]
         self.carry = None           # list of objects being carried
         self.anchor = None
         self.stretch = []           # (wire, end index 0/1) endpoints dragged along
@@ -411,7 +541,11 @@ class MoveTool(_BoxSelectTool):
 
     @property
     def status(self):
-        return {"move": "Move", "drag": "Drag", "duplicate": "Duplicate"}[self.mode]
+        return ROTATE_HINT if self.carry is not None else ""
+
+    @property
+    def label(self):
+        return {"move": "Move", "drag": "Stretch", "duplicate": "Duplicate"}[self.mode]
 
     def picked(self, objs, box):
         self.doc.begin()
@@ -420,6 +554,7 @@ class MoveTool(_BoxSelectTool):
             ed.rename_copies(self.doc.sch, objs, self.doc.lib, self.doc.local_dirs)
         self.carry = objs
         self.anchor = self.view.snap(self.mouse)
+        self.win.mode_changed.emit()
         self.stretch = []
         if self.mode == "drag":
             self.stretch = self._find_stretch(objs, box)
@@ -459,7 +594,7 @@ class MoveTool(_BoxSelectTool):
             if it is None:
                 it = self.scene._make_item(o, {})
                 self.scene.addItem(it)
-            it.set_highlight(True)
+            it.set_highlight(False)     # carried parts keep their colours in LTspice
             self.items.append(it)
         for w, _ in self.stretch:
             it = self.scene.item_of.get(id(w))
@@ -501,7 +636,9 @@ class MoveTool(_BoxSelectTool):
             if self.mode == "duplicate":
                 self.doc.sch.items += self.carry
             self.carry = None
-            self.doc.commit(self.status)
+            self.doc.commit(self.label)
+            self.win.status.emit("")
+            self.win.mode_changed.emit()
             return True
         return True
 
@@ -512,27 +649,57 @@ class MoveTool(_BoxSelectTool):
     def _cancel(self):
         self.carry = None
         self.doc.abort()
+        self.win.mode_changed.emit()
 
     def key(self, view, ev):
         ctrl = ev.modifiers() & Qt.ControlModifier
         if self.carry is not None and ctrl and ev.key() in (Qt.Key_R, Qt.Key_E):
-            cx, cy = ed.group_center(self.carry)
-            (ed.rotate if ev.key() == Qt.Key_R else ed.mirror)(self.carry, cx, cy)
-            # carried items must be rebuilt from the changed model
-            for it in self.items:
-                if it.scene():
-                    self.scene.removeItem(it)
-            for o in self.carry:
-                self.scene.item_of.pop(id(o), None)
-            self._make_carry_items()
+            self.orient(ev.key() == Qt.Key_E)
             return True
         if ev.key() == Qt.Key_Escape and self.carry is not None:
             self._cancel()
             return True
         return super().key(view, ev)
 
+    def orient(self, mirror=False):
+        if self.carry is None:
+            return
+        cx, cy = ed.group_center(self.carry)
+        (ed.mirror if mirror else ed.rotate)(self.carry, cx, cy)
+        for o in self.carry:
+            if isinstance(o, asc.SymbolInst):
+                ed.relayout_windows(o, self.doc.lib.get(o.symbol, self.doc.local_dirs))
+        # carried items must be rebuilt from the changed model
+        for it in self.items:
+            if it.scene():
+                self.scene.removeItem(it)
+        for o in self.carry:
+            self.scene.item_of.pop(id(o), None)
+        self._make_carry_items()
+        self.view.viewport().update()
+
+    def carried_pins(self):
+        """Pin points of the parts being carried (their markers move with them)."""
+        if self.carry is None:
+            return set()
+        pts = set()
+        for o in self.carry:
+            if isinstance(o, asc.SymbolInst):
+                sym = self.doc.lib.get(o.symbol, self.doc.local_dirs)
+                pts |= {pr.point for pr in symbol_pins(o, sym)}
+        return pts
+
     def paint_overlay(self, view, p):
         super().paint_overlay(view, p)
+        if self.carry is not None and view.mark_unconnected and self.scene.conn is not None:
+            d = self._offset()
+            pen = QPen(theme().color("unconnected"))
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            open_pins = set(self.scene.conn.unconnected)
+            for x, y in self.carried_pins() & open_pins:
+                p.drawRect(QRectF(x + d.x() - 4, y + d.y() - 4, 8, 8))
         if self.carry is None or not self.stretch:
             return
         d = self._offset()

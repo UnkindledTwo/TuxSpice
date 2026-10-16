@@ -5,7 +5,11 @@
 **TuxSpice** is a native Linux, LTspice-compatible schematic capture and waveform viewer
 (PySide6 + pyqtgraph + numpy) in `pyltspice/` (package and command are still named `pyltspice`).
 It reads and writes LTspice `.asc`/`.asy` files and simulates with **ngspice**, not LTspice.
-`README.md` (top level) is the user-facing description; keep its feature list and limitations in sync.
+`README.md` (top level) is the user-facing description; keep its feature list, compatibility numbers,
+comparison table (vs LTspice, ngspice, KiCad) and limitations in sync.
+Positioning: TuxSpice is an LTspice work-alike for Linux. Files stay LTspice files, it uses LTspice's
+libraries, UI and dialect, and ngspice runs underneath via a translation layer. It's not a KiCad-style
+suite (no PCB) and not a new simulator.
 
 - `LTspice64.msi`: the user's own LTspice installer. Its symbol/model libraries, examples and
   help are extracted locally and never redistributed or committed.
@@ -44,6 +48,7 @@ ngspice comes from the system (`/usr/bin/ngspice`) unless a bundled copy is foun
 ../.venv/bin/python -m pytest -q tests/test_sim.py    # run a single file while iterating
 ../.venv/bin/pip install -e .                         # after changing pyproject.toml / entry points
 timeout 60 ../.venv/bin/python scripts/sim_example.py ../work <asc>  # headless netlist+sim, OK/FAIL
+../.venv/bin/python scripts/sweep_examples.py ../work/out.tsv [--static] <dir|asc...>  # parallel sweep: OK/FAIL/TIMEOUT/ENCRYPTED, resumable
 ../.venv/bin/python scripts/render_png.py <asc> <png>           # render schematic to PNG
 QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive GUI headlessly + screenshot
 ../.venv/bin/python scripts/install_desktop.py [--remove]      # launcher, icon, .asc/.raw association (~/.local/share)
@@ -71,6 +76,9 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
   (library symbols never are; `examples/Educational/opamp.asc` once became a subckt of itself).
 - Keep every experiment short: the user does not want to wait on long timeouts. Cap ad-hoc sims at
   ~30 s (`timeout 30`, `.tran` shortened) and run sweeps in the background with a per-file `timeout 60`.
+- A sim killed by `timeout` can't clean its `/tmp/pyltspice-*` work dir, and long runs write
+  gigabytes (a sweep once filled the disk). Use `sweep_examples.py`, which gives each run its own
+  TMPDIR, kills the whole process group and deletes it; otherwise clean up after killed runs.
 - Never `pkill -f`/`pgrep -f` with a pattern that also appears in your own command line (it kills the
   shell running it). Use `pgrep -x ngspice`.
 
@@ -82,9 +90,21 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
 - Where LTspice behaviour is undocumented (e.g. PHASEDET), infer it from parameter names and the
   examples, say so in the docstring, and verify the direction/sign with a test.
 - About 3k of the ~5k files in `lib/sub` are encrypted ADI models (`<Binary File>` header). Report them as
-  unsupported (`ltcompat.scan_definitions`); never try to decrypt them.
-- LTspice-only `A` devices are emulated in `sim/adevices.py` (OTA as B sources, gates/flip-flops/
-  PHASEDET via XSPICE, Schmitt/S&H/VCO/varistor behavioural). COUNTER is reported as unsupported.
+  unsupported (`ltcompat.scan_definitions`); never try to decrypt them. 3322 of the 4365 bundled
+  examples depend on one, so they can't run outside LTspice.
+- Every LTspice `A` device type in `lib/sym` is emulated in `sim/adevices.py` (OTA as B sources;
+  gates, flip-flops, PHASEDET and COUNTER via XSPICE; Schmitt/S&H/VCO/varistor behavioural). The
+  differential Schmitt symbols netlist as plain SCHMITT with in+/in- on pins 1/2. COUNTER is
+  undocumented and unused in the examples: it's modelled as a divide-by-`cycles` (`d_fdiv`).
+- `.pz` and `.disto` are ngspice-only extras (LTspice has neither): `.pz` results open in a table,
+  `.disto` gives one plot window per harmonic (`PlotWindow.slot`), and probes go to all of them.
+
+## Comparing with LTspice under Wine
+
+- Run LTspice on a nested X server (`Xephyr :5`) in a *copy* of the Wine prefix with `LTspice.ini`
+  removed, so the user's own settings are never touched. TuxSpice can run on the same display and
+  be driven with the same XTest input; XFixes gives the cursor image. Results go in `docs/ui_spec.md`.
+- LTspice crashes on exit under Wine (settings aren't saved), and its file dialogs don't open there.
 
 ## ngspice quirks handled in `sim/`
 
@@ -97,8 +117,9 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
 - ngspice reads `.spiceinit` from its cwd, so the runner works in a temp dir that holds one.
 - Device currents come back as `i(@q1[ic])` and `v1#branch`. `vectors.lt_name` maps them to
   LTspice names (`Ic(Q1)`, `I(V1)`).
-- X-instance rule (`netlist.element_line`): when SpiceModel names a model, use it plus Value2. When
-  SpiceModel is a *file*, Value2 is the subckt name plus params. Otherwise use Value, then Value2.
+- X-instance rule (`netlist.element_line`): when SpiceModel names a model, use it plus Value2 (and
+  Value too if it holds parameters, e.g. LTC1068-200's `Fclk=2Meg`). When SpiceModel is a *file*,
+  Value2 is the subckt name plus params. Otherwise use Value, then Value2.
 - LTspice functions ngspice lacks (`u`, `uramp`, `buf`, `inv`, `mc`, `flat`, `gauss`, `rand`, `random`,
   `white`) are added as `.func` only when used (`LT_FUNCS`, dependencies in `FUNC_DEPS`).
 - Model cards are scoped per `.subckt` (`adevices.scoped_models`): LTC.lib defines e.g. `.model X D(...)`
@@ -112,6 +133,21 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
 - XSPICE `s_xfer` takes its DC state from `int_ic` instead of solving it, so Laplace sources are
   built as integrator chains instead (`laplace.to_elements`).
 - K = 1 (perfect coupling) is clamped to 0.9999; ngspice's inductance matrix is singular otherwise.
+- `G n+ n- nc+ nc- gm vto=<V> dir=1` (undocumented, ~570 uses in LTC.lib/ADI macro-models) is a
+  one-sided clamp: a B source gm*knee(V(nc)-vto) (`ltcompat._threshold_vccs`).
+- `I n+ n- <value> load` becomes `I0*tanh(V/0.25)` per the help page (`_load_current_source`).
+- Symbols that skip SpiceOrder numbers (e.g. ADG919: 1-5, 8) get unconnected nodes in the gaps so
+  the subckt port count matches (`netlist._fill_order_gaps`).
+- numparam has no temperature: `temp`/`temper` inside `{...}` and `.param` become `lt_temp`
+  (defined from `.temp`, default 27). B-source equations keep `temper`, which works there.
+- `smallsig()` becomes `{lt_smallsig}`, set to 1 for `.ac`/`.noise` runs. Nested braces
+  (`{a*{b}}`, common after `table()` expansion) are flattened to parentheses.
+- Device currents in B/E/G expressions (`Id(M3)`, `Ic(Q1)`, `I(R5)`) get a 0 V sense source in
+  series with that terminal, per subckt scope (`ltcompat.rewrite_device_currents`).
+- Behavioral `R n+ n- R=<expr with V()/I()/time>` and `C ... Q=<expr>` become B sources.
+  `NoJacob` on B sources is dropped. Model parameters may be comma-separated (`D(Ron=1k, Roff=1T)`).
+- Non-ASCII characters in netlists/libraries (`M§Q6`, `10Ω`) are mapped to ASCII (`ascii_only`);
+  ngspice rejects them.
 - Non-converging runs are retried with relaxed options, each retry capped at `RETRY_TIMEOUT` (30 s).
 
 ## Status
@@ -121,5 +157,7 @@ finishing or reprioritizing work.
 
 - `pyltspice/docs/ui_spec.md` tracks every LTspice menu/shortcut/behaviour with its source (help page
   or recollection) and implementation status. Update it when adding UI.
-- Re-measure simulation compatibility with `scripts/sim_example.py ../work <dir>/*.asc`
-  (latest numbers are in PLAN.md).
+- Re-measure simulation compatibility with `scripts/sweep_examples.py` (or `sim_example.py` for a
+  few files); latest numbers are in PLAN.md and README. Applications: of the 1043 examples without
+  encrypted models, 929 run (was 608 at the start of this pass); the 114 left are listed by cause
+  in PLAN.md.

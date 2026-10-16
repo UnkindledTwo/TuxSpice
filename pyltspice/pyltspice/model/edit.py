@@ -69,6 +69,47 @@ def mirror(objs, cx, cy):
             o.coords = c[:4] + c[6:8] + c[4:6]
 
 
+def relayout_windows(inst: asc.SymbolInst, sym) -> None:
+    """Keep InstName/Value readable after rotating or mirroring a part, as LTspice does.
+
+    LTspice rewrites the WINDOW 0/3 lines of two-pin parts whose labels sit beside the body
+    (res, cap, ind, diode, voltage, current...). The rule was read from the bundled examples
+    (1600+ rotated resistors) and checked live: at R90/M90 the name sits at the body's left
+    edge (VBottom) and the value at its right edge (VTop), both centred between the pins, so
+    on screen the name is above the part and the value below it. R270/M270 swap the edges,
+    R180/M180 swap the two labels' heights, and R0/M0 use the symbol's own windows.
+    Other symbols are left alone."""
+    if sym is None or len(sym.pins) != 2:
+        return
+    w0, w3 = sym.windows.get(0), sym.windows.get(3)
+    p1, p2 = sym.pins
+    if w0 is None or w3 is None or w0.just != "Left" or w3.just != "Left" or p1.x != p2.x:
+        return
+    from .asy import Window
+    xs = [x for s in sym.shapes for x in s.coords[:4][0::2]]
+    if not xs:
+        return
+    if any(s.kind == "ARC" for s in sym.shapes):
+        x0 = min(min(s.coords[4], s.coords[6]) if s.kind == "ARC" else min(s.coords[:4][0::2])
+                 for s in sym.shapes) + 1
+    else:
+        x0 = min(xs)
+    x1 = max(xs)
+    cy = (p1.y + p2.y) // 2
+    rot = inst.orient.lstrip("RM")
+    if rot == "90":
+        new = {0: Window(x0, cy, "VBottom", w0.size), 3: Window(x1, cy, "VTop", w3.size)}
+    elif rot == "270":
+        new = {0: Window(x1, cy, "VTop", w0.size), 3: Window(x0, cy, "VBottom", w3.size)}
+    elif rot == "180":
+        new = {0: Window(w0.x, w3.y, w0.just, w0.size), 3: Window(w3.x, w0.y, w3.just, w3.size)}
+    else:
+        inst.windows.pop(0, None)
+        inst.windows.pop(3, None)
+        return
+    inst.windows.update(new)
+
+
 def group_center(objs):
     pts = [p for o in objs for p in points_of(o)]
     if not pts:

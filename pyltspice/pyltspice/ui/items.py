@@ -60,7 +60,7 @@ class WireItem(SchItem):
 
 class JunctionItem(QGraphicsItem):
     """All junction dots of the sheet in one item."""
-    R = 3.5
+    R = 4.2     # LTspice draws ~8.5 schematic units square
 
     def __init__(self, points):
         super().__init__()
@@ -98,6 +98,7 @@ class SymbolItem(SchItem):
                 body.addPath(shape_path(s.kind, s.coords, self.m, inst.x, inst.y))
         self._body = body
         hit = _stroke(body)
+        hit.setFillRule(Qt.WindingFill)    # the box added below must not cancel the stroke out
         if sym is not None:
             x0, y0, x1, y1 = sym.bbox()
             a = apply(self.m, x0, y0)
@@ -219,7 +220,7 @@ class FlagItem(SchItem):
 
     def paint(self, p, opt, widget=None):
         f = self.obj
-        p.setPen(make_pen(self.color("flag")))
+        p.setPen(make_pen(self.color("flag_graphic")))
         p.setBrush(Qt.NoBrush)
         if self._text is None:
             p.drawLine(QPointF(f.x - 16, f.y), QPointF(f.x + 16, f.y))
@@ -231,6 +232,7 @@ class FlagItem(SchItem):
             p.drawPath(self._port_outline(r))
         elif f.name.startswith("$G_"):
             p.drawRect(r.adjusted(-2, 0, 2, 0))
+        p.setPen(make_pen(self.color("flag")))
         draw_text(p, *self._text)
 
 

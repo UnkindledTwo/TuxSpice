@@ -6,14 +6,31 @@ from PySide6.QtGui import QFont, QFontMetricsF, QPainter, QPainterPath, QPen
 
 from ..model.geometry import FONT_SCALE, TextFrame, apply
 
-FONT_FAMILY = "Arial"
-BASE_FONT_PX = 12.0          # height of a size-1 font in schematic units
+# LTspice's default schematic font is Tahoma 28, bold (Settings > Schematic > Font Properties).
+# Measured under Wine, size index 2 has a 22.4-unit em. Tahoma is missing on most Linux systems,
+# so fall back to DejaVu Sans (same Verdana lineage), condensed to roughly Tahoma's width.
+FONT_FAMILIES = ["Tahoma", "DejaVu Sans", "Verdana", "Arial"]
+BASE_FONT_PX = 14.93         # em of a size-1 font in schematic units
+_family = None
 
 _DASH = {1: Qt.DashLine, 2: Qt.DotLine, 3: Qt.DashDotLine, 4: Qt.DashDotDotLine}
 
 
+def _font_family():
+    global _family
+    if _family is None:
+        from PySide6.QtGui import QFontDatabase
+        have = set(QFontDatabase.families())
+        _family = next((f for f in FONT_FAMILIES if f in have), FONT_FAMILIES[0])
+    return _family
+
+
 def font_for(size: int) -> QFont:
-    f = QFont(FONT_FAMILY)
+    family = _font_family()
+    f = QFont(family)
+    f.setBold(True)
+    if family != "Tahoma":
+        f.setStretch(90)
     f.setPixelSize(max(1, round(BASE_FONT_PX * FONT_SCALE.get(size, 1.5))))
     return f
 

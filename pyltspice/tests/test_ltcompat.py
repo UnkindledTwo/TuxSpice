@@ -44,9 +44,12 @@ def test_step_parsing():
     assert len(tr.steps[1].values) == 3
 
 
-def test_unsupported_adevice_reported():
-    tr = translate("* t\nA1 clk 0 0 0 0 p2 p1 0 COUNTER\n")
-    assert tr.errors
+def test_every_ltspice_adevice_is_emulated():
+    """All A-device types in lib/sym translate (COUNTER was the last one)."""
+    tr = translate("* t\nA1 clk 0 0 0 0 p2 p1 0 COUNTER cycles=4\n"
+                   "A2 a b 0 0 0 qb q 0 SCHMITT vt=0.5 vh=0.1\n")
+    assert not tr.errors
+    assert "d_fdiv(div_factor=4 high_cycles=2" in tr.text
 
 
 def test_adevices_expand():
@@ -86,3 +89,11 @@ def test_models_are_scoped_to_their_subckt():
 def test_perfect_coupling_clamped():
     out = lines("K1 L1 L2 L3 1\nK2 L4 L5 1\n")
     assert "K1_01 L1 L2 0.9999" in out and "K2 L4 L5 0.9999" in out
+
+
+def test_model_params_with_commas():
+    """LTC.lib's LT1012 has '.model DC D(Ron=1k, Roff=1T  Vfwd=1 ilimit=332u)': LTspice accepts
+    commas between parameters; a value must not keep the comma."""
+    from pyltspice.sim.adevices import _model_params
+    p = _model_params("D(Ron=1k, Roff=1T  Vfwd=1 ilimit=332u noiseless)")
+    assert p == {"ron": "1k", "roff": "1T", "vfwd": "1", "ilimit": "332u"}

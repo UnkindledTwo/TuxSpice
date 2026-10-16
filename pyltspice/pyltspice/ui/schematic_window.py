@@ -1,7 +1,7 @@
 """MDI child showing one schematic, with editing modes, editors and probing."""
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtWidgets import QDialog, QInputDialog, QMenu, QMessageBox, QVBoxLayout, QWidget
 
 from ..model import asc
@@ -18,6 +18,7 @@ class SchematicWindow(QWidget):
     status = Signal(str)
     probed = Signal(str)          # expression to plot
     title_changed = Signal()
+    mode_changed = Signal()       # editing mode or carry state changed (Rotate/Mirror enabling)
 
     def __init__(self, doc: SchematicDocument, main):
         super().__init__()
@@ -45,11 +46,19 @@ class SchematicWindow(QWidget):
     def title(self):
         return self.doc.title + ("*" if self.doc.modified else "")
 
+    # LTspice opens an empty sheet zoomed so a resistor is about 190 px tall
+    NEW_SHEET_SCALE = 2.3
+
     def showEvent(self, ev):
         super().showEvent(ev)
         if not getattr(self, "_fitted", False):
             self._fitted = True
-            self.view.zoom_to_fit()
+            if self.doc.sch.items:
+                self.view.zoom_to_fit()
+            else:
+                self.view.resetTransform()
+                self.view.scale(self.NEW_SHEET_SCALE, self.NEW_SHEET_SCALE)
+                self.view.centerOn(0, 0)
 
     def _mouse_moved(self, x, y):
         if self.tool and self.tool.status:
@@ -64,6 +73,29 @@ class SchematicWindow(QWidget):
         self.tool.activate()
         self.view.viewport().update()
         self.status.emit(self.tool.status or "")
+        self.mode_changed.emit()
+
+    def start_zoom_area(self):
+        self.set_tool(tools.ZoomAreaTool(self))
+
+    def find_text(self, text) -> int:
+        """Highlight objects whose name, attributes, label or text contain `text` (case-insensitive)."""
+        from ..model import asc
+        needle = text.lower()
+        hits = []
+        for o in self.doc.sch.items:
+            if isinstance(o, asc.SymbolInst):
+                fields = [o.symbol, *o.attrs.values()]
+            elif isinstance(o, asc.Flag):
+                fields = [o.name]
+            elif isinstance(o, asc.Text):
+                fields = [o.text]
+            else:
+                continue
+            if any(needle in str(f).lower() for f in fields):
+                hits.append(o)
+        self.doc.scene.set_highlight(hits)
+        return len(hits)
 
     def start_wire(self):
         self.set_tool(tools.WireTool(self))
@@ -119,6 +151,9 @@ class SchematicWindow(QWidget):
     def rotate_or_mirror(self, mirror=False):
         """Ctrl+R / Ctrl+E outside of a carry: forwarded to the active tool."""
         from PySide6.QtGui import QKeyEvent
+        if hasattr(self.tool, "orient"):
+            self.tool.orient(mirror)
+            return
         key = Qt.Key_E if mirror else Qt.Key_R
         ev = QKeyEvent(QKeyEvent.KeyPress, key, Qt.ControlModifier)
         self.tool.key(self.view, ev)
@@ -172,6 +207,7 @@ class SchematicWindow(QWidget):
         base = inst.symbol.replace("\\\\", "/").replace("\\", "/").split("/")[-1].lower()
         self.doc.begin()
         accepted = False
+        self.status.emit(f"Editing component: {inst.name}")
         if ctrl:
             dlg = dialogs.AttributeEditor(self, inst, sym)
             if dlg.exec() == QDialog.Accepted:
@@ -191,15 +227,26 @@ class SchematicWindow(QWidget):
                 dlg.apply()
                 accepted = True
         elif prefix in "VI" and base in ("voltage", "current"):
-            dlg = dialogs.VoltageSourceDialog(self, inst, current=prefix == "I")
-            if dlg.exec() == QDialog.Accepted:
-                dlg.apply()
-                accepted = True
+            # LTspice first shows a small DC editor; Advanced (or a non-DC value) opens the full one
+            full = not dialogs.SimpleSourceDialog.handles(inst)
+            if not full:
+                dlg = dialogs.SimpleSourceDialog(self, inst, current=prefix == "I")
+                if dlg.exec() == QDialog.Accepted:
+                    dlg.apply()
+                    accepted = True
+                    full = dlg.advanced
+            if full:
+                dlg = dialogs.VoltageSourceDialog(self, inst, current=prefix == "I")
+                dialogs.popup_at_cursor(dlg)
+                if dlg.exec() == QDialog.Accepted:
+                    dlg.apply()
+                    accepted = True
         else:
             dlg = dialogs.AttributeEditor(self, inst, sym)
             if dlg.exec() == QDialog.Accepted:
                 dlg.apply()
                 accepted = True
+        self.status.emit("")
         if accepted:
             self.doc.commit("Edit Component")
         else:
@@ -232,6 +279,47 @@ class SchematicWindow(QWidget):
         return self.sim_plot is not None
 
     def probe(self, pos, objs, alt=False):
+        expr = self.probe_expr(pos, objs, alt)
+        if expr:
+            self.probed.emit(expr)
+
+    def probe_hint(self, obj) -> str:
+        """Status bar text while hovering with a probe, worded like LTspice's."""
+        from ..sim.spicenum import fmt
+        if isinstance(obj, asc.Wire):
+            pos = QPointF(obj.x1, obj.y1)
+        else:
+            pos = QPointF(obj.x, obj.y)
+        expr = self.probe_expr(pos, [obj])
+        if not expr:
+            return ""
+        v = self._op_value(expr)
+        if isinstance(obj, asc.SymbolInst):
+            text = f"Left-click to plot {expr}.  Right click to edit."
+            if v is not None:
+                text += f"  DC operating point: {expr} = {fmt(v, 'A', 4)}"
+            return text
+        text = f"Click to plot {expr.upper()}."
+        if v is not None:
+            text += f"  DC operating point: {expr} = {fmt(v, 'V', 4)}"
+        return text
+
+    def _op_value(self, expr):
+        """Operating-point value for the hover hint: from a .op run, else the first point of
+        the last run (LTspice reports the transient's starting operating point)."""
+        v = self.doc.scene.op_values.get(expr.lower())
+        if v is not None:
+            return v
+        plot = self.sim_plot
+        if plot is None or plot.is_complex or plot.data is None or not plot.data.shape[1]:
+            return None
+        if getattr(self, "_op_vectors_for", None) is not plot:
+            from ..sim.vectors import VectorSet
+            self._op_vectors, self._op_vectors_for = VectorSet(plot), plot
+        y = self._op_vectors.get(expr)
+        return None if y is None else float(y[0].real)
+
+    def probe_expr(self, pos, objs, alt=False):
         expr = None
         sym_hit = next((o for o in objs if isinstance(o, asc.SymbolInst)), None)
         if sym_hit is not None:
@@ -263,5 +351,4 @@ class SchematicWindow(QWidget):
                         break
             if net and net != "0":
                 expr = f"V({net})"
-        if expr:
-            self.probed.emit(expr)
+        return expr

@@ -52,6 +52,10 @@ class Plot:
     @property
     def analysis(self):
         p = self.plotname.lower()
+        if "pole-zero" in p:
+            return "pz"
+        if "distortion" in p:
+            return "disto"
         for key in ("transient", "ac", "dc", "operating point", "noise", "transfer"):
             if key in p:
                 return {"transient": "tran", "operating point": "op", "transfer": "tf"}.get(key, key)
