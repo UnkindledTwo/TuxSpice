@@ -15,6 +15,10 @@ def norm_name(name: str) -> str:
 class SymbolLibrary:
     def __init__(self, roots=None):
         self.roots = [Path(r) for r in (roots or [config.SYM_DIR])]
+        self.rescan()
+
+    def rescan(self):
+        """Index the symbol folders again (e.g. after first-run setup extracted them)."""
         self._by_rel = {}     # 'opamps/opamp2' -> path
         self._by_base = {}    # 'opamp2' -> path (first one found)
         for root in self.roots:

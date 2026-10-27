@@ -175,7 +175,7 @@ Open:
   Stretch (nearest end/corner), Duplicate and Delete work on them, and Plot Settings > Undo/Redo
   covers them along with the traces.
 - Next from Wine: still greyed: symbol editor, buses (BUS tap), marching waveforms,
-  efficiency report/calculation, eye diagram, Nyquist unit circle. Also Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks, the
+  efficiency report/calculation, eye diagram, Nyquist unit circle. Also Windows-style blue MDI title bars, the
   bottom of the Plot Settings menu (scrolled off the 900 px Wine screen: use a taller Xephyr),
   and checking the editing dialogs (component, analysis) against LTspice.
 
@@ -188,7 +188,9 @@ Open:
 
 ### 4. Packaging
 - Done: `.desktop` file, icon and MIME types for `.asc`/`.raw` (`scripts/install_desktop.py`).
-- First-run wizard that finds `LTspice64.msi` and extracts it.
+- Done: first-run setup (`ui/setup_dialog.py`, `setup_lib.py`): finds `LTspice*.msi` in Downloads,
+  Desktop, home and the working directory (one level down), extracts it on a worker thread
+  (~2 s), and also appears when Component (P) needs a missing library.
 
 ## How we check it works
 

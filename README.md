@@ -118,7 +118,8 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
 python3 -m venv .venv
 .venv/bin/pip install -e pyltspice
 
-# Extract the symbol/model libraries, examples and help pages from your installer
+# Optional: TuxSpice offers this itself on first start (it looks for LTspice64.msi in
+# Downloads, Desktop and your home folder). From the command line:
 .venv/bin/python pyltspice/scripts/extract_msi.py LTspice64.msi
 ```
 

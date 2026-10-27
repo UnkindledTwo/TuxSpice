@@ -849,9 +849,21 @@ class MainWindow(QMainWindow):
                 return
             (stack.undo if undo else stack.redo)()
 
+    def ensure_library(self):
+        """First-run setup when the LTspice library is missing; open schematics then redraw
+        with the real symbols. True if the library is there."""
+        from .setup_dialog import ensure_library, library_missing
+        was_missing = library_missing()
+        ok = ensure_library(self)
+        if ok and was_missing:
+            for sub in self.mdi.subWindowList():
+                if isinstance(sub.widget(), SchematicWindow):
+                    sub.widget().doc.scene.rebuild()
+        return ok
+
     def pick_component(self):
         sw = self.schematic()
-        if sw is None:
+        if sw is None or not self.ensure_library():
             return
         dlg = ComponentDialog(sw.doc.lib, self)
         if dlg.exec() == QDialog.Accepted and dlg.selected:
