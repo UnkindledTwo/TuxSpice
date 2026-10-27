@@ -1379,7 +1379,11 @@ def translate(text: str, search_dirs=(), default_devices=True, default_libraries
              for t in l.split()[1:2]]
     lt_temp = temps[0] if temps and temps[0] is not None else 27
     smallsig = 1 if tr.analysis in ("ac", "noise") else 0
-    body = [title, ".param pi=3.141592653589793", f".param lt_temp={lt_temp:g}",
+    # LTspice nets named $G_<name> are global: the same node at every level of the hierarchy
+    globals_ = sorted({t for l in out if l[:1] not in ".*+" for t in l.split()[1:]
+                       if t[:3].lower() == "$g_"}, key=str.lower)
+    body = [title] + ([".global " + " ".join(globals_)] if globals_ else []) + [
+            ".param pi=3.141592653589793", f".param lt_temp={lt_temp:g}",
             f".param lt_smallsig={smallsig}"] + func_defs + out + model_cards + \
         ([".options savecurrents"] if save_currents else []) + [".end"]
     tr.text = "\n".join(body) + "\n"

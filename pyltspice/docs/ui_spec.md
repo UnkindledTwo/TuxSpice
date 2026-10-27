@@ -26,7 +26,7 @@ Status: ✅ implemented, ◐ partial, ❌ missing.
 | Right-click on attribute text edits that attribute (Expert mode) | H editingcomponents | ✅ |
 | Right-click on component body opens the type-specific editor (Assisted mode) | H editingcomponents | ✅ R/C/L/V/I; Q/D/M/J get the attribute editor with Pick New Transistor/Diode/MOSFET/JFET (LTspice + TuxSpice models); ◐ others use the attribute editor |
 | Ctrl+right-click on body opens the Component Attribute Editor (Super Expert) | H editingcomponents | ✅ |
-| Net names starting with `$G_` are global, drawn with a box | H labelanodename | ◐ drawn; netlisting not global across hierarchy |
+| Net names starting with `$G_` are global, drawn with a box | H labelanodename | ✅ declared `.global` for ngspice, so they join across hierarchy levels |
 | I/O port labels drawn differently, no netlist effect | H labelanodename | ◐ simple box outline |
 | Ctrl held while drawing wires toggles orthogonal snapping | H draftingoptions | ✅ |
 | Mouse wheel toward you zooms in (option to reverse) | H draftingoptions | ✅ |

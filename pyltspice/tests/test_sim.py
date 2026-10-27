@@ -352,3 +352,31 @@ def test_random_seed_repeats_unless_reseeding():
     assert spiceinit(RunOptions(), 0) != spiceinit(RunOptions(), 1)
     assert "num_threads=4" in spiceinit(RunOptions(threads=4))
     assert "rndseed=1\n" not in spiceinit(RunOptions(mc_reseed=True))
+
+
+@needs_ngspice
+def test_global_nets_cross_the_hierarchy(tmp_path):
+    """A $G_VDD label inside a hierarchical sheet is the top level's $G_VDD (LTspice: nets
+    named $G_* are global)."""
+    from pyltspice.model import asc
+    from pyltspice.model.library import default_library
+    lib = default_library()
+    if lib.get("res") is None:
+        pytest.skip("needs the LTspice library")
+    (tmp_path / "blk.asy").write_text("Version 4\nSymbolType BLOCK\nRECTANGLE Normal -32 -32 32 32\n"
+                                      "PIN 32 0 RIGHT 8\nPINATTR PinName out\nPINATTR SpiceOrder 1\n")
+    (tmp_path / "blk.asc").write_text(
+        # R1 from $G_VDD to out, R2 from out to ground (res pins: +16/+96 below the origin)
+        "Version 4\nSHEET 1 880 680\nWIRE 16 96 16 112\n"
+        "FLAG 16 16 $G_VDD\nFLAG 16 96 out\nFLAG 16 192 0\n"
+        "SYMBOL res 0 0 R0\nSYMATTR InstName R1\nSYMATTR Value 1k\n"
+        "SYMBOL res 0 96 R0\nSYMATTR InstName R2\nSYMATTR Value 1k\n")
+    top = tmp_path / "top.asc"
+    top.write_text("Version 4\nSHEET 1 880 680\nSYMBOL blk 0 0 R0\nSYMATTR InstName X1\n"
+                   "FLAG 32 0 o\nTEXT 0 100 Left 2 !V1 $G_VDD 0 10\nTEXT 0 140 Left 2 !.op\n")
+    sch = asc.load_asc(top)
+    nl = generate_netlist(sch, lib).text
+    res = Simulator(nl, tmp_path / "top", [tmp_path]).run()
+    assert res.ok, res.errors
+    assert ".global $G_VDD" in (tmp_path / "top.ngspice.cir").read_text()
+    assert abs(float(np.real(VectorSet(res.plots[0]).get("V(o)"))[0]) - 5.0) < 1e-6
