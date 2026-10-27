@@ -188,6 +188,8 @@ Open:
 
 - Done: TuxSpice's own model library (`pyltspice/data/models`, symbols in `data/sym/OpAmps`): 16
   BJTs, 26 diodes/zeners/LEDs, 12 MOSFETs, 5 JFETs and 13 op-amps that LTspice's libraries lack,
+  plus the BC107/177/237/307/546 families (70, with A/B/C gain groups) and germanium parts
+  (15 transistors, 7 diodes; `type=germanium`, searchable in the picker),
   fitted to datasheet typicals and simulated against them in `tests/test_models.py`. Found by
   name like `standard.*` (LTspice's cards win a clash). "Pick New Transistor/Diode/MOSFET/JFET"
   lists both libraries. Next: darlingtons (TIP120/122 need a subckt symbol), comparators

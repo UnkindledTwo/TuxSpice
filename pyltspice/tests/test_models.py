@@ -27,29 +27,49 @@ def _op(tmp_path, body, tag):
     return lambda name: float(np.real(vs.get(name))[0])
 
 
-# name: (test current, typical hFE) from the datasheets
+GE = (0.08, 0.45)
+# name: (test current, typical hFE[, VBE range]) from the datasheets
 BJT = {"BC337": (0.1, 250), "BC327": (0.1, 250), "S8050": (0.1, 200), "S8550": (0.1, 200),
        "PN2222A": (0.15, 200), "2N5551": (0.01, 150), "MPSA42": (0.01, 100), "MPSA92": (0.01, 100),
        "BD139": (0.15, 100), "BD140": (0.15, 100), "TIP31C": (1, 60), "TIP32C": (1, 60),
-       "TIP41C": (1, 60), "TIP42C": (1, 60), "MJE3055": (2, 50), "MJE2955": (2, 50)}
+       "TIP41C": (1, 60), "TIP42C": (1, 60), "MJE3055": (2, 50), "MJE2955": (2, 50),
+       # germanium: (test current, hFE, VBE range) -- VBE is a few tenths of a volt
+       "AC125": (2e-3, 125, GE), "AC126": (2e-3, 140, GE), "AC127": (0.1, 100, GE), "AC128": (0.3, 100, GE),
+       "AC187": (0.3, 150, GE), "AC188": (0.3, 150, GE), "OC44": (1e-3, 100, GE), "OC45": (1e-3, 50, GE),
+       "OC71": (1e-3, 47, GE), "OC72": (10e-3, 90, GE), "2N404": (10e-3, 60, GE), "2N1305": (10e-3, 80, GE),
+       "2N1308": (10e-3, 80, GE), "AF117": (1e-3, 150, GE), "AF139": (1.5e-3, 50, GE)}
+# BC107-109, BC177-179, BC237-239, BC307-309, BC546-560: hFE group at 2 mA, 5 V (plain number = B)
+BC_GROUPS = {"": 290, "A": 180, "B": 290, "C": 520}
+
+
+def _bjt_targets(cards):
+    out = dict(BJT)
+    for name in cards:
+        m = re.fullmatch(r"BC(10[789]|17[789]|23[789]|30[789]|5[45]\d|560)([ABC]?)", name)
+        if m:
+            out[name] = (2e-3, BC_GROUPS[m.group(2)], (0.55, 0.75))
+    return out
 
 
 def test_bjt_hfe_and_vbe(tmp_path):
     cards = _cards("bjt")
-    assert set(cards) == set(BJT)
+    targets = _bjt_targets(cards)
+    assert set(cards) == set(targets)
+    assert {"BC238", "BC238B", "BC548C", "BC309", "AC128", "OC71"} <= set(cards)
     lines = ["Vp ref 0 5", "Vn refn 0 -5"]
-    for k, (name, (ic, _)) in enumerate(BJT.items()):
+    for k, (name, (ic, *_)) in enumerate(targets.items()):
         pnp = cards[name] == "PNP"
         # the collector current is forced; feedback on the base holds Vce at +-5 V
         lines += [f"I{k} {'c%d 0' % k if pnp else '0 c%d' % k} {ic}",
                   f"E{k} bb{k} 0 c{k} {'refn' if pnp else 'ref'} 1000",
                   f"Vb{k} bb{k} b{k} 0", f"Q{k} c{k} b{k} 0 {name}"]
     v = _op(tmp_path, "\n".join(lines) + "\n.lib tuxspice.bjt\n", "bjt")
-    for k, (name, (ic, hfe)) in enumerate(BJT.items()):
+    for k, (name, (ic, hfe, *vr)) in enumerate(targets.items()):
         ib = abs(v(f"I(Vb{k})"))
         vbe = abs(v(f"V(b{k})"))
+        lo, hi = vr[0] if vr else (0.55, 1.1)
         assert 0.6 * hfe < ic / ib < 1.5 * hfe, (name, ic / ib)
-        assert 0.55 < vbe < 1.1, (name, vbe)
+        assert lo < vbe < hi, (name, vbe)
 
 
 # name: (current, expected V across it; negative current = reverse, i.e. Vz)
@@ -60,7 +80,10 @@ DIODES = {"1N4001": (1, 0.93), "1N4002": (1, 0.93), "1N4004": (1, 0.93), "1N5408
           "1N4740A": (-0.025, -10), "1N4742A": (-0.021, -12), "1N4744A": (-0.017, -15),
           "1N4746A": (-0.014, -18), "1N5231B": (-0.02, -5.1), "BZX84C5V1": (-0.005, -5.1),
           "BZX84C3V3": (-0.005, -3.3), "LED_RED": (0.02, 2.0), "LED_YELLOW": (0.02, 2.05),
-          "LED_GREEN": (0.02, 2.2), "LED_BLUE": (0.02, 3.1), "LED_WHITE": (0.02, 3.1)}
+          "LED_GREEN": (0.02, 2.2), "LED_BLUE": (0.02, 3.1), "LED_WHITE": (0.02, 3.1),
+          # germanium signal diodes: Vf at 1 mA (a few tenths of a volt; silicon is ~0.6)
+          "1N34A": (1e-3, 0.32), "1N60": (1e-3, 0.28), "1N270": (1e-3, 0.25), "OA90": (1e-3, 0.35),
+          "OA91": (1e-3, 0.33), "OA95": (1e-3, 0.30), "AA119": (1e-3, 0.30)}
 
 
 def test_diode_forward_and_zener_voltages(tmp_path):

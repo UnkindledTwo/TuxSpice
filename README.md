@@ -44,9 +44,11 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   and FETs but only Analog Devices op-amps. TuxSpice adds its own models, written from datasheet
   typical values and checked in ngspice against them: op-amps (741, LM358, LM324, LMV358,
   TL071/072/074, TL081/082, NE5532, LM833, MCP6002, in the component browser under OpAmps),
-  BJTs (BC337/BC327, S8050/S8550, PN2222A, 2N5551, MPSA42/92, BD139/140, TIP31C/32C/41C/42C,
-  MJE3055/2955), diodes (1N4001–1N4004, 1N5408, FR107, UF4007, MUR160, 1N5822, BAT85, 1N47xxA and
-  BZX84 zeners, 5 mm LEDs), MOSFETs (2N7000, BS250, AO3400, IRF520/540/540N/640/740/3205,
+  BJTs (the BC107–109, BC177–179, BC237–239, BC307–309 and BC546–560 families with their A/B/C
+  gain groups, BC337/BC327, S8050/S8550, PN2222A, 2N5551, MPSA42/92, BD139/140, TIP31C/32C/41C/42C,
+  MJE3055/2955), germanium transistors (AC125–128, AC187/188, OC44/45/71/72, 2N404, 2N1305/1308,
+  AF117/139), diodes (1N4001–1N4004, 1N5408, FR107, UF4007, MUR160, 1N5822, BAT85, 1N47xxA and
+  BZX84 zeners, 5 mm LEDs, germanium 1N34A, 1N60, 1N270, OA90/91/95, AA119), MOSFETs (2N7000, BS250, AO3400, IRF520/540/540N/640/740/3205,
   IRLZ44N, IRF9540, IRF9Z34N) and JFETs (2N5457/5458/5460, BF245A, MPF102). They are
   approximations (no darlingtons yet; op-amps don't model common-mode limits or noise), and
   schematics using them need TuxSpice's model files to run in LTspice.

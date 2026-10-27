@@ -367,7 +367,7 @@ class DevicePicker(QDialog):
     TuxSpice's own library (data/models/tuxspice.*), filtered to the symbol's polarity/type."""
     KINDS = {
         "bjt": ("Bipolar Transistor", [("Part No.", "name"), ("Mfg", "mfg"), ("Polarity", "kind"),
-                                       ("Vceo", "vceo"), ("Ic", "icrating"), ("Library", "library")]),
+                                       ("Type", "type"), ("Vceo", "vceo"), ("Ic", "icrating"), ("Library", "library")]),
         "dio": ("Diode", [("Part No.", "name"), ("Mfg", "mfg"), ("Type", "type"), ("Vbreakdown", "vpk"),
                           ("Iave", "iave"), ("Library", "library")]),
         "mos": ("MOSFET", [("Part No.", "name"), ("Mfg", "mfg"), ("Channel", "channel"), ("Vds", "vds"),
@@ -388,6 +388,8 @@ class DevicePicker(QDialog):
             pr = part["params"]
             row = {"name": part["name"], "library": part["library"], "kind": part["kind"].upper(),
                    "channel": "P" if part["pchan"] else "N", **{k: v.strip('"').replace("_", " ") for k, v in pr.items()}}
+            if kind == "bjt":
+                row.setdefault("type", "silicon")
             if only and not self._matches(kind, only, part, row):
                 continue
             self.rows.append(row)
@@ -397,7 +399,7 @@ class DevicePicker(QDialog):
         lay.addWidget(show_all, 0, 0)
         lay.addWidget(QLabel("Part No.:"), 0, 1)
         self.part = QLineEdit()
-        self.part.setPlaceholderText("e.g. 2N3904, IRF, LED")
+        self.part.setPlaceholderText("e.g. 2N3904, BC238, germanium, LED")
         lay.addWidget(self.part, 0, 2)
         filt = QPushButton("Filter")
         lay.addWidget(filt, 0, 3)
@@ -431,7 +433,7 @@ class DevicePicker(QDialog):
 
     def _fill(self, *_):
         q = self.part.text().strip().lower()
-        self.shown = [r for r in self.rows if not q or q in r["name"].lower() or q in r.get("mfg", "").lower()]
+        self.shown = [r for r in self.rows if not q or any(q in r.get(k, "").lower() for k in ("name", "mfg", "type"))]
         self.table.setRowCount(len(self.shown))
         for i, row in enumerate(self.shown):
             for c, (_, key) in enumerate(self.cols):
