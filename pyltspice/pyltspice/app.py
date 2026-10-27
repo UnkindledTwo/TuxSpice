@@ -11,8 +11,15 @@ def main(argv=None):
     app = QApplication(argv)
     app.setApplicationName("pyltspice")
     app.setOrganizationName("pyltspice")
+    from .ui import appearance
+    from .ui.settings_dialog import get
+    appearance.apply(app, get("operation/app_theme"))    # follows the desktop's light/dark scheme
     from .ui.main_window import MainWindow
     win = MainWindow()
+    try:
+        app.styleHints().colorSchemeChanged.connect(win._color_scheme_changed)
+    except AttributeError:      # Qt < 6.5
+        pass
     win.show()
     win.ensure_library()        # first run: extract the library from the user's LTspice64.msi
     if not config.ngspice_path():

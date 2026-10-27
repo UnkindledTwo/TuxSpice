@@ -863,23 +863,27 @@ def icon(name) -> QIcon:
     p.translate(-U / 2, -U / 2)
     ICONS.get(name, lambda p: _label_text(p, "?", K, 20, QRectF(0, 0, U, U)))(p)
     p.end()
-    ic = QIcon(pm)
-    ic.addPixmap(_greyed(pm), QIcon.Disabled)
+    # drawn for a light toolbar; on a dark one, dark strokes are lightened (appearance.adapt_icon)
+    from PySide6.QtGui import QGuiApplication, QPalette
+    from .appearance import adapt_icon, is_dark
+    ic = QIcon(adapt_icon(pm, QGuiApplication.palette().color(QPalette.Window)))
+    ic.addPixmap(_greyed(pm, is_dark()), QIcon.Disabled)
     return ic
 
 
-def _greyed(pm: QPixmap) -> QPixmap:
+def _greyed(pm: QPixmap, dark=False) -> QPixmap:
     """LTspice greys a disabled button as a flat silhouette: dark parts turn mid grey and white
-    details stay white (Qt's default is a washed-out copy instead)."""
+    details stay white (Qt's default is a washed-out copy instead). On a dark toolbar the
+    silhouette is a dim grey, so disabled buttons still look disabled."""
     import numpy as np
     from PySide6.QtGui import QImage
     img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
     w, h = img.width(), img.height()
     a = np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine())[:, :w * 4].reshape(h, w, 4).copy()
     lum = a[..., :3].astype(int).mean(-1)
-    grey = np.array([160, 160, 164], np.uint8)        # BGR order doesn't matter for grey
+    grey = np.array([92, 92, 96] if dark else [160, 160, 164], np.uint8)   # BGR: same for grey
     light = lum > 200
-    a[..., :3] = np.where(light[..., None], 255, grey)
+    a[..., :3] = np.where(light[..., None], 128 if dark else 255, grey)
     out = QImage(a.data, w, h, w * 4, QImage.Format_ARGB32).copy()
     out.setDevicePixelRatio(pm.devicePixelRatio())
     return QPixmap.fromImage(out)

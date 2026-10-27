@@ -814,3 +814,54 @@ def test_pin_shorts_and_subfolder_symbols(tmp_path):
         assert library.schematic_dirs(sch_path) == [tmp_path]
     finally:
         library.SEARCH_SUBDIRS = True
+
+
+def _icon_contrast_failures(ic, bg):
+    """Fraction of an icon's solid pixels with less than 3:1 contrast against bg."""
+    import numpy as np
+    from PySide6.QtGui import QImage
+    from pyltspice.ui.appearance import luminance
+    pm = ic if hasattr(ic, "toImage") else ic.pixmap(32, 32)
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    w, h = img.width(), img.height()
+    a = np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine())[:, :w * 4].reshape(h, w, 4)
+    solid = a[..., 3] > 200
+    rgb = a[..., 2::-1].astype(float) / 255
+    lin = np.where(rgb <= 0.03928, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    y = lin @ np.array([0.2126, 0.7152, 0.0722])
+    ratio = (np.maximum(y, luminance(bg)) + 0.05) / (np.minimum(y, luminance(bg)) + 0.05)
+    return float(((ratio < 3) & solid).sum()) / max(1, solid.sum())
+
+
+def test_dark_theme_icons_readable_and_restorable(qapp):
+    """On a dark palette (Settings > Application theme, a dark GTK theme, or the desktop's dark
+    preference) toolbar icons are lightened until they read against the toolbar; switching
+    back restores the light look exactly."""
+    from PySide6.QtGui import QColor, QPalette
+    from pyltspice.ui import appearance, icons
+    from pyltspice.ui.main_window import MainWindow
+    # the transform: black and navy strokes become light, light backgrounds are left alone
+    pm = icons.icon("resistor").pixmap(32, 32)
+    dark_bg = QColor("#2b2b2b")
+    assert appearance.adapt_icon(pm, QColor("#efefef")).toImage() == pm.toImage()
+    assert _icon_contrast_failures(appearance.adapt_icon(pm, dark_bg), dark_bg) < 0.02
+    win = MainWindow()
+    win.show()
+    light_bg = qapp.palette().color(QPalette.Window)
+    shown = {k: a for k, a in win.actions.items() if a in win.toolbar.actions()}     # what sits on the toolbar
+    before = {k: a.icon().pixmap(32, 32).toImage() for k, a in shown.items()}
+    try:
+        appearance.apply(qapp, "Dark")
+        qapp.processEvents()
+        assert appearance.is_dark()
+        bg = qapp.palette().color(QPalette.Window)
+        bad = {k: f for k, a in shown.items() if a.isEnabled() and (f := _icon_contrast_failures(a.icon(), bg)) > 0.05}
+        assert not bad, bad
+        assert "rgba(" in win.toolbar.styleSheet()
+    finally:
+        appearance.apply(qapp, "System")
+        qapp.processEvents()
+    assert qapp.palette().color(QPalette.Window) == light_bg
+    after = {k: a.icon().pixmap(32, 32).toImage() for k, a in shown.items()}
+    assert after == before
+    win.close()

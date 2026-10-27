@@ -25,6 +25,7 @@ SPEC = {
     "operation/toolbar_size": ("Default", True),
     "operation/plot_priority": ("medium", True),
     "operation/fastaccess_ram": ("40%", True),
+    "operation/app_theme": ("System", True),      # TuxSpice extra: window colours (not the canvases)
     # Schematic (drafting options); key names predate the dialog and are kept
     "drafting/allow_pin_shorts": (False, True),
     "drafting/autoscroll": (True, True),
@@ -315,6 +316,11 @@ class SettingsDialog(QDialog):
             "operation/background", ["Oscilloscope", "None", "User supplied (~/.config/pyltspice/TuxSpice.jpg)"])))
         v.addWidget(_row("Toolbar Style[*]:", self._combo("operation/toolbar_style", ["Default"])))
         v.addWidget(_row("Toolbar icon size[*]:", self._combo("operation/toolbar_size", ["Small", "Default", "Large"])))
+        theme = _row("Application theme[*]:", self._combo("operation/app_theme", ["System", "Light", "Dark"]))
+        theme.setToolTip("Window and dialog colours: follow the desktop (System) or force light or dark.\n"
+                         "Schematic and plot colours are set in Tools > Color Preferences.\n"
+                         "(TuxSpice only; LTspice has no such setting.)")
+        v.addWidget(theme)
         v.addWidget(_row("Waveform Plotting Thread Priority[*]:",
                          self._combo("operation/plot_priority", ["low", "medium", "high"]), tip=NO_NGSPICE))
         v.addWidget(_row("RAM for Fast Access Conversion[*]:",

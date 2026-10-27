@@ -1212,20 +1212,34 @@ class WaveformViewer(QWidget):
                 self._add_text(pane, xs[i], ys[i], labels[k], t.color, (1, 1))
 
     def _add_marker(self, pane, x, y, text, color):
-        note = self.add_note(Note("marker", pane, [(x, y)], color, text, (-0.05, 1.1)))
-        # margins of several traces/steps land close together: try rows above and below the
-        # point, nearest first, for one that clears the other labels and stays in the plot
-        others = [n.label.sceneBoundingRect() for n in self.notes
-                  if n is not note and n.kind == "marker" and n.pane is pane]
-        area = note.vb.sceneBoundingRect()
+        self.add_note(Note("marker", pane, [(x, y)], color, text, (-0.05, 1.1)))
+        self._restack(pane)
+        if not getattr(pane, "_restack_hooked", False):
+            # rows are worked out in pixels: redo them when the pane is resized or zoomed
+            from PySide6.QtCore import QTimer
+            vb = pane.plot.getPlotItem().getViewBox()
+            later = lambda *_: QTimer.singleShot(0, lambda: self._restack(pane))
+            vb.sigResized.connect(later)
+            vb.sigRangeChanged.connect(later)
+            pane._restack_hooked = True
+
+    def _restack(self, pane):
+        """Margin labels of several traces/steps land close together: each takes the row nearest
+        its point (above, then below...) that clears the labels before it and stays in the plot."""
+        if not isValid(pane) or pane not in self.panes:
+            return
+        placed = []
+        area = pane.plot.getPlotItem().getViewBox().sceneBoundingRect()
         # anchor y: 1.1 = just above the point, -0.1 = just below, each step one more line
         rows = [1.1] + [y for n in range(1, 6) for y in (1.1 + n, -0.1 - (n - 1))]
-        for ay in rows + [1.1]:
-            note.anchor = (-0.05, ay)
-            note.label.setAnchor(note.anchor)
-            r = note.label.sceneBoundingRect()
-            if area.contains(r) and not any(r.intersects(o) for o in others):
-                break
+        for note in [n for n in self.notes if n.kind == "marker" and n.pane is pane and n.label is not None]:
+            for ay in rows + [1.1]:
+                note.anchor = (-0.05, ay)
+                note.label.setAnchor(note.anchor)
+                r = note.label.sceneBoundingRect()
+                if area.contains(r) and not any(r.intersects(o) for o in placed):
+                    break
+            placed.append(note.label.sceneBoundingRect())
 
     def annotation_style_dialog(self):
         from PySide6.QtWidgets import QColorDialog

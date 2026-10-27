@@ -123,7 +123,8 @@ class SetupDialog(QDialog):
         self.later_btn.setEnabled(True)
         self._update()
         if error:
-            self.log.setText(f"<span style='color:#c00000'>Extraction failed: {error}</span>")
+            from .appearance import error_color
+            self.log.setText(f"<span style='color:{error_color()}'>Extraction failed: {error}</span>")
             return
         default_library().rescan()
         self.accept()

@@ -166,6 +166,8 @@ class MainWindow(QMainWindow):
         self.floating = []             # windows popped out with Float Window
         self.line_style = 0            # Edit > Draw > Line Style for new graphics
         self.actions = {}
+        from .appearance import is_dark
+        self._dark_icons = is_dark()   # icons are drawn for this; redrawn when it flips
         from . import render
         from .settings_dialog import get
         render.set_font_settings(get("drafting/font"), get("drafting/font_bold"), get("drafting/font_size"),
@@ -204,7 +206,8 @@ class MainWindow(QMainWindow):
         if seqs:
             a.setShortcuts([QKeySequence(s) for s in seqs])
         a.setShortcutContext(Qt.WindowShortcut)
-        if icon and icon in icons.ICONS:
+        a.icon_name = icon if icon and icon in icons.ICONS else None
+        if a.icon_name:
             a.setIcon(icons.icon(icon))
         a.setCheckable(checkable)
         a.setToolTip(tip or text.split("\t")[0].replace("&", ""))
@@ -573,10 +576,8 @@ class MainWindow(QMainWindow):
         from .settings_dialog import get
         px = {"Small": 20, "Large": 36}.get(get("operation/toolbar_size"), 28)
         self.toolbar.setIconSize(QSize(px, px))
-        self.toolbar.setStyleSheet("QToolBar { spacing: 1px; padding: 2px 2px; }"
-                                   "QToolButton { padding: 0px; margin: 0px; border: 1px solid transparent; }"
-                                   "QToolButton:hover { border: 1px solid #a0a0a0; background: #e5f1fb; }"
-                                   "QToolButton:pressed, QToolButton:checked { background: #cce4f7; }")
+        from .appearance import toolbar_css
+        self.toolbar.setStyleSheet(toolbar_css())
 
     def _update_actions(self, *_):
         sw = self.schematic()
@@ -671,8 +672,7 @@ class MainWindow(QMainWindow):
     def _add_window(self, widget, title):
         sub = self.mdi.addSubWindow(widget)
         sub.setWindowTitle(title)
-        sub.setWindowIcon(icons.icon("schematic_doc" if isinstance(widget, SchematicWindow) else
-                                     "waveform_doc" if isinstance(widget, PlotWindow) else "netlist"))
+        sub.setWindowIcon(icons.icon(self._doc_icon(widget)))
         if hasattr(widget, "title_changed"):
             widget.title_changed.connect(lambda: (sub.setWindowTitle(widget.title), self._update_actions()))
         if hasattr(widget, "status"):
@@ -1754,9 +1754,48 @@ class MainWindow(QMainWindow):
             self._update_actions()
         return super().eventFilter(obj, ev)
 
+    @staticmethod
+    def _doc_icon(widget):
+        return ("schematic_doc" if isinstance(widget, SchematicWindow) else
+                "waveform_doc" if isinstance(widget, PlotWindow) else "netlist")
+
+    def refresh_appearance(self):
+        """Redraw icons and toolbar tints for the current palette (light/dark switch)."""
+        from .appearance import is_dark
+        self._dark_icons = is_dark()
+        for a in self.actions.values():
+            if getattr(a, "icon_name", None):
+                a.setIcon(icons.icon(a.icon_name))
+        for sub in self.mdi.subWindowList():
+            sub.setWindowIcon(icons.icon(self._doc_icon(sub.widget())))
+        self.apply_toolbar_size()
+
+    def changeEvent(self, ev):
+        from PySide6.QtCore import QEvent
+        from .appearance import is_dark
+        if ev.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange) \
+                and getattr(self, "toolbar", None) is not None and is_dark() != self._dark_icons \
+                and self.isVisible():           # hidden windows catch up in showEvent
+            self.refresh_appearance()
+        super().changeEvent(ev)
+
+    def showEvent(self, ev):
+        from .appearance import is_dark
+        if getattr(self, "toolbar", None) is not None and is_dark() != self._dark_icons:
+            self.refresh_appearance()
+        super().showEvent(ev)
+
+    def _color_scheme_changed(self, *_):
+        """The desktop switched between light and dark while TuxSpice runs."""
+        from . import appearance
+        from .settings_dialog import get
+        appearance.apply(QApplication.instance(), get("operation/app_theme"))
+
     def apply_settings(self):
         """Push Settings values into open windows."""
         from .settings_dialog import get
+        from . import appearance
+        appearance.apply(QApplication.instance(), get("operation/app_theme"))
         self.actions["view_grid"].setChecked(get("view/grid"))
         self.actions["view_unconnected"].setChecked(get("drafting/mark_unconnected"))
         self.actions["view_anchors"].setChecked(get("view/mark_anchors"))
