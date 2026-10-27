@@ -19,7 +19,7 @@ from ..sim.rawfile import read_raw
 from ..sim.runner import Cancelled, SimResult, Simulator
 from ..sim.spicenum import fmt
 from ..sim.vectors import lt_name
-from . import dialogs, icons, shortcuts
+from . import dialogs, icons, shortcuts, tools
 from .component_dialog import ComponentDialog
 from .document import SchematicDocument
 from .schematic_window import SchematicWindow
@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         self.mdi.setViewMode(QMdiArea.SubWindowView)
         self.mdi.setDocumentMode(True)
         self.mdi.subWindowActivated.connect(self._update_actions)
+        QApplication.clipboard().dataChanged.connect(self._update_actions)
         # LTspice shows a strip of window tabs above the MDI area (View > Window Tabs)
         self.tabs = QTabBar()
         self.tabs.setDocumentMode(True)
@@ -300,8 +301,8 @@ class MainWindow(QMainWindow):
           tip="Move a section.", on="sch")
         A("edit_drag", "&Stretch", lambda: sw() and sw().start_move("drag"), ["S", "F8"], "drag",
           tip="Stretch a section.", on="sch")
-        A("edit_paste", "&Paste", None, "Ctrl+V", "paste", on="never",
-          tip="Pasting between schematics is not implemented in TuxSpice yet")
+        A("edit_paste", "&Paste", lambda: sw() and sw().start_paste(), "Ctrl+V", "paste", on="paste",
+          tip="Paste what Duplicate picked, in this or another schematic.")
         for kind, label, ic in (("LINE", "Line", "line"), ("RECTANGLE", "Rectangle", "rectangle"),
                                 ("CIRCLE", "Ellipse", "ellipse"), ("ARC", "Arc", "arc")):
             A(f"draw_{kind.lower()}", label, lambda _=False, k=kind: sw() and sw().start_draw(k), None, ic, on="sch")
@@ -405,9 +406,13 @@ class MainWindow(QMainWindow):
           "check", checkable=True, on="plot")
         A("notes_cursor_pos", "Cursor Position", lambda: pv() and pv().annotate_cursor(), "L", "cursor_pos",
           on="plot")
-        for key, text in (("notes_pm", "Annotate Phase Margin"), ("notes_gm", "Annotate Gain Margin"),
-                          ("notes_steps", "Annotate Steps"), ("notes_nyquist", "Draw Nyquist Unit Circle")):
-            A(key, text, None, on="never", tip="Not implemented in TuxSpice yet")
+        A("notes_pm", "Annotate Phase Margin", lambda: pv() and pv().annotate_margin("pm"), on="plot",
+          tip="Mark the phase margin at each AC trace's 0 dB crossing (active pane).")
+        A("notes_gm", "Annotate Gain Margin", lambda: pv() and pv().annotate_margin("gm"), on="plot",
+          tip="Mark the gain margin at each AC trace's -180° phase crossing (active pane).")
+        A("notes_steps", "Annotate Steps", lambda: pv() and pv().annotate_steps(), on="plot",
+          tip="Label each .step run's curve in the active pane.")
+        A("notes_nyquist", "Draw Nyquist Unit Circle", None, on="never", tip="Not implemented in TuxSpice yet")
         for key, text, kind, keyseq, ic in (("notes_text", "Text", "text", "T", "text"),
                                            ("notes_arrow", "Arrow", "arrow", None, "arrow"),
                                            ("notes_line", "Line", "line", "I", "line"),
@@ -574,7 +579,8 @@ class MainWindow(QMainWindow):
         sw = self.schematic()
         w = self.active_widget()
         on_plot = isinstance(w, PlotWindow)
-        state = {"any": True, "doc": w is not None, "sch": sw is not None, "plot": on_plot, "never": False}
+        state = {"any": True, "doc": w is not None, "sch": sw is not None, "plot": on_plot, "never": False,
+                 "paste": sw is not None and tools.clipboard_has_objects()}
         for k, a in self.actions.items():
             a.setEnabled(state.get(getattr(a, "on", "any"), True))
         pv = w.viewer if on_plot else None
@@ -589,6 +595,10 @@ class MainWindow(QMainWindow):
             self.actions["plot_select_steps"].setEnabled(len(pv.steps()) > 1)
             self.actions["plot_cursor"].setEnabled(any(p.traces for p in pv.panes))
             self.actions["notes_cursor_pos"].setEnabled(bool(pv.cursors))
+            has_traces = any(p.traces for p in pv.panes)
+            for k in ("notes_pm", "notes_gm"):
+                self.actions[k].setEnabled(pv.is_ac and has_traces)
+            self.actions["notes_steps"].setEnabled(len(pv.steps()) > 1 and has_traces)
             self.actions["plot_clear_cursors"].setEnabled(bool(pv.cursors) or pv.mode is not None)
             self.actions["plot_undo"].setEnabled(pv.can_undo())
             self.actions["plot_redo"].setEnabled(pv.can_redo())

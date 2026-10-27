@@ -3,8 +3,11 @@
 The user picks a command first (wire, move, delete...) and then the objects.
 A mode stays active until right-click or Esc, exactly as in LTspice.
 """
-from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
+import atexit
+
+from PySide6.QtCore import QLineF, QMimeData, QPointF, QRectF, Qt
 from PySide6.QtGui import QCursor, QPen
+from PySide6.QtWidgets import QApplication
 
 from ..model import asc
 from ..model import edit as ed
@@ -263,12 +266,9 @@ class PlaceTool(Tool):
         self.doc.begin()
         for o in self.objs:
             ed.translate(o, int(p.x()), int(p.y()))
-            if isinstance(o, asc.SymbolInst):
-                o.attrs.pop("InstName", None)   # re-number in case the sheet changed meanwhile
-            if isinstance(o, asc.SymbolInst) and not o.attrs.get("InstName"):
-                sym = self.doc.lib.get(o.symbol, self.doc.local_dirs)
-                o.attrs = {"InstName": ed.next_name(self.doc.sch, ed.name_prefix(sym, o)), **o.attrs}
-            self.doc.sch.items.append(o)
+        # re-number in case the sheet changed meanwhile
+        ed.rename_copies(self.doc.sch, self.objs, self.doc.lib, self.doc.local_dirs)
+        self.doc.sch.items += self.objs
         self._clear_items()
         self.doc.commit(self.label)
         if self.repeat:
@@ -527,6 +527,57 @@ class DeleteTool(_BoxSelectTool):
         self.doc.commit("Delete")
 
 
+CLIP_MIME = "application/x-tuxspice-asc"
+
+
+def copy_to_clipboard(objs):
+    """Duplicate also puts what it picked on the clipboard, as .asc text, so Ctrl+V can
+    paste it into another schematic (LTspice: "copy from one schematic to another")."""
+    mime = QMimeData()
+    mime.setData(CLIP_MIME, asc.Schematic(items=list(objs)).to_text().encode("utf-8"))
+    QApplication.clipboard().setMimeData(mime)
+    atexit.unregister(_release_clipboard)
+    atexit.register(_release_clipboard)
+
+
+def _release_clipboard():
+    """Qt destroys the clipboard in C exit handlers, after Python is gone; deleting a
+    Python-made QMimeData then segfaults. Drop ours while the interpreter still runs."""
+    app = QApplication.instance()
+    if app is not None and clipboard_has_objects():
+        app.clipboard().clear()
+
+
+def clipboard_has_objects():
+    mime = QApplication.clipboard().mimeData()
+    return mime is not None and mime.hasFormat(CLIP_MIME)
+
+
+def clipboard_objects():
+    """Objects last picked with Duplicate (in any TuxSpice window), or [] if none."""
+    if not clipboard_has_objects():
+        return []
+    mime = QApplication.clipboard().mimeData()
+    return asc.parse_asc(bytes(mime.data(CLIP_MIME)).decode("utf-8", "replace")).items
+
+
+class PasteTool(PlaceTool):
+    """Edit > Paste (Ctrl+V): carries the clipboard's objects by their middle, one click drops
+    them. Parts get fresh names; their letter prefix (R, XU...) is kept."""
+
+    def __init__(self, win, objs):
+        cx, cy = ed.group_center(objs)
+        for o in objs:
+            ed.translate(o, -cx, -cy)
+        self.template = objs
+        super().__init__(win, self._copies, repeat=False, label="Paste")
+
+    def _copies(self):
+        objs = ed.clone(self.template)
+        ed.rename_copies(self.doc.sch, objs, self.doc.lib, self.doc.local_dirs)
+        return objs
+
+
 class MoveTool(_BoxSelectTool):
     """Move (F7), Drag (F8, wires stay attached) and Duplicate (F6)."""
 
@@ -550,6 +601,7 @@ class MoveTool(_BoxSelectTool):
     def picked(self, objs, box):
         self.doc.begin()
         if self.mode == "duplicate":
+            copy_to_clipboard(objs)
             objs = ed.clone(objs)
             ed.rename_copies(self.doc.sch, objs, self.doc.lib, self.doc.local_dirs)
         self.carry = objs

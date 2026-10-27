@@ -112,6 +112,11 @@ class SchematicWindow(QWidget):
     def start_move(self, mode="move"):
         self.set_tool(tools.MoveTool(self, mode))
 
+    def start_paste(self):
+        objs = tools.clipboard_objects()
+        if objs:
+            self.set_tool(tools.PasteTool(self, objs))
+
     def place_symbol(self, symbol_name, attrs=None, label="Place Component"):
         sym = self.doc.lib.get(symbol_name, self.doc.local_dirs)
         if sym is None:

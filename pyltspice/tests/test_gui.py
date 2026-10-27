@@ -485,3 +485,162 @@ def test_subckt_and_pcb_netlists():
     assert ".subckt blk in" in text and "R1 in 0 1k" in text and ".tran" not in text
     tango = export(sch, fmt="Tango")
     assert "[\nR1\nres\n1k" in tango and "(\nin\nR1-1\n)" in tango
+
+
+def test_decimate_keeps_each_columns_extremes():
+    """Uneven steps, as transient output has: the decimated trace has the same first/last,
+    low and high point in every pixel column as the full one."""
+    import numpy as np
+    from pyltspice.ui.waveform import decimate
+    rng = np.random.default_rng(1)
+    x = np.cumsum(rng.exponential(1.0, 200_000) * np.repeat([0.01, 1.0, 0.1], [100_000, 20_000, 80_000]))
+    y = np.sign(np.sin(x)) + rng.normal(0, 0.1, len(x))
+    x0, x1, cols = x[1000], x[-1000], 500
+    idx = decimate(x, y, x0, x1, cols)
+    assert len(idx) <= 4 * cols + 4 and np.all(np.diff(idx) > 0)
+    col = np.floor((x - x0) * cols / (x1 - x0)).astype(int)
+    inside = (x >= x0) & (x <= x1)
+    for c in (0, 7, 250, 499):
+        full, kept = (col == c) & inside, np.isin(np.arange(len(x)), idx) & (col == c)
+        assert y[full].min() == y[kept].min() and y[full].max() == y[kept].max()
+    # zoomed in to a few points, every point is drawn
+    assert list(decimate(x, y, x[5000], x[5010], cols)) == list(range(4999, 5012))
+
+
+def test_dense_trace_draws_quickly_and_fits_whole_range(qapp):
+    """A 1 MHz square wave over 10 ms (~300k points) once took ~25 s per repaint and froze
+    the window: only what fits on screen is drawn, and zoom-to-fit still sees all of it."""
+    import time
+    import numpy as np
+    from pyltspice.sim.rawfile import Plot, Variable
+    from pyltspice.ui.waveform import WaveformViewer
+    t = np.sort(np.random.default_rng(2).uniform(0, 1e-2, 300_000))
+    plot = Plot(title="t", plotname="Transient Analysis", flags={"real"},
+                variables=[Variable(0, "time", "time"), Variable(1, "V(a)", "voltage")],
+                data=np.array([t, 5.0 * (np.sin(2 * np.pi * 1e6 * t) > 0)]))
+    v = WaveformViewer(plot, "t")
+    v.resize(1000, 400)
+    v.show()
+    v.add_trace("V(a)")
+    qapp.processEvents()
+    item = v.panes[0].traces[0].items[0][1]
+    vb = item.getViewBox()
+    assert len(item.curve.xData) < 10_000
+    start = time.time()
+    v.grab()
+    assert time.time() - start < 3
+    vb.setXRange(5e-3, 5.002e-3, padding=0)
+    qapp.processEvents()
+    assert len(item.curve.xData) == np.count_nonzero((t >= 5e-3) & (t <= 5.002e-3)) + 2
+    v.autorange()
+    qapp.processEvents()
+    lo, hi = vb.viewRange()[0]
+    assert lo <= t[0] and hi >= t[-1]
+    v.close()
+
+
+@needs_lib
+def test_duplicate_then_paste_into_another_schematic(qapp):
+    """LTspice: start Duplicate in one schematic, then Ctrl+V in another pastes it there."""
+    from PySide6.QtWidgets import QApplication
+    from pyltspice.ui import tools
+    from pyltspice.ui.main_window import MainWindow
+    QApplication.clipboard().clear()
+    win = MainWindow()
+    win.resize(1000, 800)
+    win.show()
+    win.new_schematic()
+    a = win.schematic()
+    a.view.resetTransform()
+    a.view.centerOn(0, 0)
+    a.place_symbol("res")
+    _click(a.view, 0, 0)
+    _click(a.view, 0, 0, Qt.RightButton)
+    win._update_actions()
+    assert not win.actions["edit_paste"].isEnabled()      # nothing duplicated yet
+
+    a.start_move("duplicate")
+    _click(a.view, 0, -10)                                # pick R1: it is now on the clipboard
+    _click(a.view, 0, 0, Qt.RightButton)                  # drop the carried copy
+    _click(a.view, 0, 0, Qt.RightButton)                  # leave Duplicate
+    assert len(a.doc.sch.symbols) == 1 and tools.clipboard_has_objects()
+
+    win.new_schematic()
+    b = win.schematic()
+    assert b is not a
+    b.view.resetTransform()
+    b.view.centerOn(0, 0)
+    qapp.processEvents()
+    assert win.actions["edit_paste"].isEnabled()
+    win.actions["edit_paste"].trigger()
+    assert isinstance(b.tool, tools.PasteTool)
+    _click(b.view, 160, 160)
+    assert [s.name for s in b.doc.sch.symbols] == ["R1"]
+    pasted = b.doc.sch.symbols[0]
+    assert (pasted.x, pasted.y) == (160 - 16, 160 - 64)  # carried by its middle, like a new part
+    assert not isinstance(b.tool, tools.PasteTool)        # one paste per Ctrl+V
+    win.actions["edit_paste"].trigger()
+    _click(b.view, 320, 160)
+    assert [s.name for s in b.doc.sch.symbols] == ["R1", "R2"]
+    b.doc.undo.undo()
+    assert len(b.doc.sch.symbols) == 1
+    for sw in (a, b):
+        sw.doc.undo.setClean()
+    win.close()
+
+
+def test_clipboard_carries_wires_flags_and_text(qapp):
+    from pyltspice.ui import tools
+    objs = [asc.Wire(0, 0, 64, 0), asc.Flag(64, 0, "out"), asc.Text(0, 32, "Left", 2, "!.tran 1m"),
+            asc.SymbolInst("res", 0, 0, "R90", {}, {"InstName": "R7", "Value": "1k"})]
+    tools.copy_to_clipboard(objs)
+    back = tools.clipboard_objects()
+    assert asc.Schematic(items=back).to_text() == asc.Schematic(items=objs).to_text()
+
+
+def test_phase_and_gain_margin_math():
+    """Analytic loops: K/(s(1+s/p)) crossing 0 dB at its pole has 45° of phase margin and no
+    -180° crossing; 4/(1+s/p)^3 crosses -180° at p√3, where its gain is 4/8 (6.02 dB margin)."""
+    import numpy as np
+    from pyltspice.ui.waveform import gain_margin, phase_margin
+    f = np.logspace(0, 6, 2001)
+    s, p = 2j * np.pi * f, 2 * np.pi * 1e3
+    fc, pm = phase_margin(f, p * np.sqrt(2) / (s * (1 + s / p)))
+    assert abs(fc / 1e3 - 1) < 1e-3 and abs(pm - 45) < 0.05
+    assert gain_margin(f, p * np.sqrt(2) / (s * (1 + s / p))) is None
+    fg, gm = gain_margin(f, 4 / (1 + s / p) ** 3)
+    assert abs(fg / (1e3 * np.sqrt(3)) - 1) < 1e-3 and abs(gm - 20 * np.log10(2)) < 0.01
+    # 4/(1+s/p)^3 crosses 0 dB at f/p = sqrt(4^(2/3) - 1): PM = 180 - 3 atan(1.2328) = 27.14°
+    fc, pm = phase_margin(f, 4 / (1 + s / p) ** 3)
+    assert abs(fc / 1232.8 - 1) < 1e-3 and abs(pm - 27.14) < 0.05
+    assert phase_margin(f, 0.5 / (1 + s / p)) is None     # never above 0 dB
+
+
+def test_annotate_margins_and_steps(qapp):
+    import numpy as np
+    import pyqtgraph as pg
+    from pyltspice.sim.rawfile import Plot, Variable
+    from pyltspice.ui.main_window import MainWindow, PlotWindow
+    f = np.logspace(0, 6, 601)
+    s, p = 2j * np.pi * f, 2 * np.pi * 1e3
+    loops = [4 / (1 + s / p) ** 3, 2 / (1 + s / p) ** 3]
+    plot = Plot(title="t", plotname="AC Analysis", flags={"complex"},
+                variables=[Variable(0, "frequency", "frequency"), Variable(1, "V(loop)", "voltage")],
+                data=np.array([np.r_[f, f], np.r_[loops[0], loops[1]]]),
+                step_bounds=[(0, 601), (601, 1202)], step_labels=["Step 1: K=4", "Step 2: K=2"])
+    win = MainWindow()
+    win.resize(1000, 800)
+    win.show()
+    v = win._new_viewer(plot, "t.raw")
+    v.add_trace("V(loop)")
+    win._add_window(PlotWindow(v, None), "t.raw")
+    qapp.processEvents()
+    win._update_actions()
+    texts = lambda: [it.textItem.toPlainText() for _, it in v.annotations if isinstance(it, pg.TextItem)]
+    win.actions["notes_gm"].trigger()
+    assert texts() == ["Gain Margin: 6.0dB @ 1.732kHz", "Gain Margin: 12.0dB @ 1.732kHz"]
+    win.actions["notes_pm"].trigger()
+    assert sum(t.startswith("Phase Margin") for t in texts()) == 2
+    win.actions["notes_steps"].trigger()
+    assert texts()[-2:] == ["Step 1: K=4", "Step 2: K=2"]
+    win.close()

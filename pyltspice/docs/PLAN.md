@@ -44,6 +44,9 @@ Phase 2 (simulation):
 - [x] Runner with our own `.step` support (linear, octave, decade, list); `.meas` results in the log
 - [x] Waveform viewer: stacked panes, coloured trace labels, dB and phase for AC, a second axis for
       currents, Add Traces dialog, arithmetic on traces, average/RMS
+- [x] Dense traces (fast sources over long `.tran`, 10^5..10^7 points) draw per-pixel min/max of
+      the visible range (`waveform.TraceCurve`): a 1 MHz pulse over 10 ms went from ~25 s per
+      repaint (the window looked hung) to 0.3 s
 - [x] Probing: click a wire for its voltage, a part for its current, Alt-click a part for its power
 
 Phase 3 (editing):
@@ -161,9 +164,15 @@ Open:
   examples still pass). Possible next steps: an MCP tool to place/move parts
   through the editor instead of raw `.asc` text, and stepped runs written to `.raw` (results of
   `.step` runs live only in memory, so a fresh headless session can't read them from disk).
-- Next from Wine: still greyed: symbol editor, buses (BUS tap), Paste, marching waveforms,
-  efficiency report/calculation, eye diagram, phase/gain-margin and step annotations, moving
-  annotations. Also Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks, the
+- Edit > Paste (Ctrl+V), per the help: Duplicate puts what it picks on the clipboard as `.asc`
+  text (`application/x-tuxspice-asc`), so it pastes into another schematic or TuxSpice window;
+  parts are renamed on a clash. Fixed on the way: a Python-made QMimeData left on the clipboard
+  segfaulted the process at exit (Qt frees it after Python finalizes); it's released in `atexit`.
+- Notes & Annotations > Annotate Phase Margin / Gain Margin / Steps (`waveform.phase_margin`,
+  `gain_margin`): every AC trace (and shown `.step` run) of the active pane gets a marker and
+  label; crowded labels move to the nearest free row.
+- Next from Wine: still greyed: symbol editor, buses (BUS tap), marching waveforms,
+  efficiency report/calculation, eye diagram, Nyquist unit circle, moving annotations. Also Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks, the
   bottom of the Plot Settings menu (scrolled off the 900 px Wine screen: use a taller Xephyr),
   and checking the editing dialogs (component, analysis) against LTspice.
 

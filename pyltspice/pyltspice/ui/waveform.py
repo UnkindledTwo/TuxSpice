@@ -32,6 +32,134 @@ def trace_width():
     return 1.2 * _setting("waveform/trace_width")
 
 
+def decimate(x, y, x0, x1, cols):
+    """Indices of the points of (x, y) that draw the same picture as all of them over
+    [x0, x1] at `cols` columns: per column the first, lowest, highest and last point.
+    x must be non-decreasing; it need not be evenly spaced (transient steps aren't)."""
+    i0 = max(int(np.searchsorted(x, x0, "left")) - 1, 0)
+    i1 = min(int(np.searchsorted(x, x1, "right")) + 1, len(x))
+    if i1 - i0 <= 4 * cols or x1 <= x0:
+        return np.arange(i0, i1)
+    xs, ys = x[i0:i1], y[i0:i1]
+    col = np.floor((xs - x0) * (cols / (x1 - x0))).astype(np.int64)
+    starts = np.flatnonzero(np.r_[True, col[1:] != col[:-1]])
+    ends = np.r_[starts[1:], len(xs)] - 1
+    seg = np.repeat(np.arange(len(starts)), ends - starts + 1)
+    keep = [starts, ends]
+    for red in (np.minimum, np.maximum):
+        hit = np.flatnonzero(ys == red.reduceat(ys, starts)[seg])
+        keep.append(hit[np.r_[True, seg[hit][1:] != seg[hit][:-1]]])   # first hit per column
+    return i0 + np.unique(np.concatenate(keep))
+
+
+def _crossing(f, v, i, level):
+    """Frequency (interpolated in log f) and fraction where v crosses level between i and i+1."""
+    t = (level - v[i]) / (v[i + 1] - v[i])
+    return 10 ** (np.log10(f[i]) + t * (np.log10(f[i + 1]) - np.log10(f[i]))), t
+
+
+def phase_margin(f, z):
+    """(frequency, degrees) at the first downward 0 dB crossing of the loop gain z, or None.
+    LTspice doesn't document its Annotate Phase Margin; this is the textbook definition,
+    180 deg + phase there, wrapped to (-180, 180] so it doesn't matter which multiple of
+    360 deg the unwrapped phase starts at."""
+    mag = 20 * np.log10(np.maximum(np.abs(z), 1e-300))
+    ph = np.degrees(np.unwrap(np.angle(z)))
+    hits = np.flatnonzero((mag[:-1] > 0) & (mag[1:] <= 0))
+    if not len(hits):
+        return None
+    i = hits[0]
+    fc, t = _crossing(f, mag, i, 0.0)
+    pm = (ph[i] + t * (ph[i + 1] - ph[i]) + 360) % 360 - 180
+    return fc, (180.0 if pm == -180 else pm)
+
+
+def gain_margin(f, z):
+    """(frequency, dB) at the first phase crossing of -180 deg (mod 360), or None.
+    Gain margin is minus the loop gain there (undocumented in LTspice, as phase_margin)."""
+    mag = 20 * np.log10(np.maximum(np.abs(z), 1e-300))
+    ph = np.degrees(np.unwrap(np.angle(z)))
+    turn = np.floor((ph + 180) / 360)          # which odd multiple of 180 deg lies below
+    hits = np.flatnonzero(turn[1:] != turn[:-1])
+    if not len(hits):
+        return None
+    i = hits[0]
+    level = 360 * max(turn[i], turn[i + 1]) - 180
+    fc, t = _crossing(f, ph, i, level)
+    return fc, -(mag[i] + t * (mag[i + 1] - mag[i]))
+
+
+class TraceCurve(pg.PlotDataItem):
+    """A trace that draws only what the screen can show. A switching circuit easily gives
+    10^5..10^7 points; Qt stroking them all took tens of seconds per repaint, which froze the
+    window. pyqtgraph's own downsampling assumes evenly spaced x, which transient data isn't,
+    so this decimates per pixel column instead (`decimate`), redone on every x-range change.
+    Hooks pyqtgraph's (private) _getDisplayDataset; the full data stays in its cache.
+    Even decimated, Qt strokes an antialiased path wider than 1 px (the default 1.2 px trace)
+    very slowly: ~10 s for 10k points of a switching waveform. Separate segments take 0.3 s."""
+
+    MIN_POINTS = 2000         # below this, drawing everything is cheap
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self._shown_key = None
+        self._shown = None
+        self._monotonic = {}
+        self._stroke_mode()
+
+    def setPen(self, *args, **kw):
+        super().setPen(*args, **kw)
+        self._stroke_mode()
+
+    def _stroke_mode(self):
+        pen = self.opts["pen"]
+        wide = isinstance(pen, QPen) and pen.widthF() > 1 and pen.style() == Qt.SolidLine
+        self.curve.setSegmentedLineMode("on" if wide else "auto")
+
+    def _cols(self, vb):
+        return max(int(vb.width() * 2), 1)
+
+    def _getDisplayDataset(self):
+        full = super()._getDisplayDataset()
+        vb = self.getViewBox()
+        if full is None or vb is None or len(full.x) <= self.MIN_POINTS:
+            return full
+        if id(full) not in self._monotonic:
+            with np.errstate(invalid="ignore"):
+                self._monotonic = {id(full): bool(np.all(np.diff(full.x) >= 0) and np.isfinite(full.y).all())}
+        if not self._monotonic[id(full)]:
+            return full
+        r = vb.viewRect()
+        key = (id(full), r.left(), r.right(), self._cols(vb))
+        if key != self._shown_key:
+            idx = decimate(full.x, full.y, r.left(), r.right(), key[3])
+            self._shown = type(full)(full.x[idx], full.y[idx], full.xAllFinite, full.yAllFinite)
+            self._shown_key = key
+        return self._shown
+
+    def dataBounds(self, ax, frac=1.0, orthoRange=None):
+        # the drawn curve is only the visible slice; autorange needs the whole trace
+        full = super()._getDisplayDataset()
+        if full is None or not self.curve.isVisible() or len(full.x) <= self.MIN_POINTS:
+            return super().dataBounds(ax, frac, orthoRange)
+        d, o = (full.x, full.y) if ax == 0 else (full.y, full.x)
+        if orthoRange is not None:
+            d = d[(o >= orthoRange[0]) & (o <= orthoRange[1])]
+        d = d[np.isfinite(d)]
+        return (float(d.min()), float(d.max())) if len(d) else (None, None)
+
+    def viewRangeChanged(self, vb=None, ranges=None, changed=None):
+        super().viewRangeChanged(vb, ranges, changed)
+        if changed is None or changed[0]:
+            self.updateItems(styleUpdate=False)
+
+    def viewTransformChanged(self):
+        super().viewTransformChanged()
+        vb = self.getViewBox()
+        if vb is not None and self._shown_key is not None and self._shown_key[3] != self._cols(vb):
+            self.updateItems(styleUpdate=False)
+
+
 class EngAxis(pg.AxisItem):
     """Axis with LTspice-style engineering labels (1ms, 10KHz, -20dB)."""
 
@@ -84,6 +212,7 @@ class Trace:
         self.items = []
         self.item_steps = []         # .step run of each entry in items
         self.cx = self.cy = None     # data the cursors follow (first .step run)
+        self.runs = []               # (step, x, y) per .step run; y is complex for AC
         self.vb = None
         self.pane = None
 
@@ -295,17 +424,19 @@ class Pane(QWidget):
         trace.pane = self
         for k, (a, b) in enumerate(steps):
             xs = x[a:b]
+            trace.runs.append((k, xs, y[a:b]))
             n_before = len(trace.items)
             if self.viewer.is_ac:
                 z = y[a:b]
                 mag = 20 * np.log10(np.maximum(np.abs(z), 1e-300))
-                item = pi.plot(xs, mag, pen=pen)
+                item = TraceCurve(xs, mag, pen=pen)
+                pi.addItem(item)
                 trace.items.append((pi, item))
                 if self.viewer.show_phase:
                     ph = np.degrees(np.unwrap(np.angle(z)))
                     dpen = QPen(pen)
                     dpen.setStyle(Qt.DashLine)
-                    pitem = pg.PlotCurveItem(np.log10(xs), ph, pen=dpen)
+                    pitem = TraceCurve(np.log10(xs), ph, pen=dpen)
                     self.phase_vb.addItem(pitem)
                     trace.items.append((self.phase_vb, pitem))
             else:
@@ -315,13 +446,14 @@ class Pane(QWidget):
                     self.left_unit = unit
                     self.left.unit = unit
                 if unit == self.left_unit:
-                    item = pi.plot(xs, ys, pen=pen)
+                    item = TraceCurve(xs, ys, pen=pen)
+                    pi.addItem(item)
                     trace.items.append((pi, item))
                     trace.vb = pi.getViewBox()
                 else:
                     # LTspice puts a second unit (e.g. currents) on a right-hand axis
                     self._ensure_right(unit)
-                    item = pg.PlotCurveItem(xs, ys, pen=pen)
+                    item = TraceCurve(xs, ys, pen=pen)
                     self.phase_vb.addItem(item)
                     trace.items.append((self.phase_vb, item))
                     trace.vb = self.phase_vb
@@ -882,6 +1014,81 @@ class WaveformViewer(QWidget):
         pane = c.trace.pane
         x = np.log10(c.x) if self.is_ac else c.x
         self._add_text(pane, x, c.y, f"({fmt(c.x, xu, 5)}, {fmt(c.y, yu, 5)})")
+
+    def annotate_margin(self, kind):
+        """Notes & Annotations > Annotate Phase/Gain Margin: mark each AC trace of the active
+        pane (every shown .step run) at its 0 dB or -180 deg crossover."""
+        pane = self.active if self.active in self.panes else self.panes[0]
+        shown = self.visible_steps
+        found = 0
+        for t in pane.traces:
+            for k, f, z in t.runs:
+                if shown is not None and k not in shown:
+                    continue
+                r = (phase_margin if kind == "pm" else gain_margin)(f, z)
+                if r is None:
+                    continue
+                fc, val = r
+                if kind == "pm":
+                    y, label = 0.0, f"Phase Margin: {val:.1f}° @ {fmt(fc, 'Hz', 4)}"
+                else:
+                    y, label = -val, f"Gain Margin: {val:.1f}dB @ {fmt(fc, 'Hz', 4)}"
+                self._add_marker(pane, np.log10(fc), y, label, t.color)
+                found += 1
+        if not found:
+            what = "0 dB crossing" if kind == "pm" else "-180° phase crossing"
+            self.status.emit(f"No trace in the active pane has a {what}")
+
+    def annotate_steps(self):
+        """Notes & Annotations > Annotate Steps: name each shown .step run at the right end of
+        its curve in the active pane (undocumented in LTspice; labels as in Select Steps)."""
+        pane = self.active if self.active in self.panes else self.panes[0]
+        labels = list(self.plot.step_labels)
+        vb = pane.plot.getPlotItem().getViewBox()
+        x1 = vb.viewRange()[0][1]
+        for t in pane.traces:
+            if t.vb is not None and t.vb is not vb:
+                continue                    # on the right-hand axis: different y scale
+            for k, xs, ys in t.runs:
+                if self.visible_steps is not None and k not in self.visible_steps:
+                    continue
+                if self.is_ac:
+                    xs, ys = np.log10(xs), 20 * np.log10(np.maximum(np.abs(ys), 1e-300))
+                else:
+                    xs, ys = np.real(xs), np.real(ys)
+                i = min(int(np.searchsorted(xs, x1, "right")), len(xs)) - 1
+                if i < 0 or k >= len(labels) or not labels[k]:
+                    continue
+                label = pg.TextItem(labels[k], color=t.color, anchor=(1, 1))
+                label.setFont(plot_font())
+                label.setPos(xs[i], ys[i])
+                vb.addItem(label, ignoreBounds=True)
+                self.annotations.append((vb, label))
+
+    def _add_marker(self, pane, x, y, text, color):
+        vb = pane.plot.getPlotItem().getViewBox()
+        dot = pg.ScatterPlotItem([x], [y], size=7, symbol="o", pen=pg.mkPen(color), brush=None)
+        vb.addItem(dot, ignoreBounds=True)
+        label = pg.TextItem(text, color=color, anchor=(-0.05, 1.1))
+        label.setFont(plot_font())
+        label.setPos(x, y)
+        vb.addItem(label, ignoreBounds=True)
+        # margins of several traces/steps land close together: try rows above and below the
+        # point, nearest first, for one that clears the other labels and stays in the plot
+        others = [it.sceneBoundingRect() for v, it in self.annotations
+                  if v is vb and getattr(it, "is_marker_label", False)]
+        area = vb.sceneBoundingRect()
+        # anchor y: 1.1 = just above the point, -0.1 = just below, each step one more line
+        rows = [1.1] + [y for n in range(1, 6) for y in (1.1 + n, -0.1 - (n - 1))]
+        for ay in rows:
+            label.setAnchor((-0.05, ay))
+            r = label.sceneBoundingRect()
+            if area.contains(r) and not any(r.intersects(o) for o in others):
+                break
+        else:
+            label.setAnchor((-0.05, 1.1))
+        label.is_marker_label = True
+        self.annotations += [(vb, dot), (vb, label)]
 
     def annotation_style_dialog(self):
         from PySide6.QtWidgets import QColorDialog
