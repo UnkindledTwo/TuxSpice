@@ -31,10 +31,21 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
 - **Editing**: LTspice-style editing modes (place, wire, label, move, stretch, duplicate, rotate,
   mirror, delete, zoom area, search), undo/redo, LTspice's own placement and wiring behavior
   (parts carried by their middle, labels kept upright on rotation, click an open pin to start a
-  wire), the component browser, R/C/L editors with "Select Resistor/Capacitor/Inductor" from
-  LTspice's part databases, source, net-label, text and analysis dialogs, the attribute editor,
+  wire), copy and paste between schematics, the component browser, R/C/L editors with "Select
+  Resistor/Capacitor/Inductor" from LTspice's part databases, "Pick New Transistor/Diode/MOSFET/
+  JFET" for semiconductors, source, net-label, text and analysis dialogs, the attribute editor,
   and LTspice 26's default shortcuts (W/G/V/R/C/L/D/P/N/T, `.` directive, S stretch, Z zoom
   area, Alt+R run; XVII's F2–F9 still work).
+- **Common parts LTspice doesn't ship**: LTspice's own libraries cover ~2,500 transistors, diodes
+  and FETs but only Analog Devices op-amps. TuxSpice adds its own models, written from datasheet
+  typical values and checked in ngspice against them: op-amps (741, LM358, LM324, LMV358,
+  TL071/072/074, TL081/082, NE5532, LM833, MCP6002, in the component browser under OpAmps),
+  BJTs (BC337/BC327, S8050/S8550, PN2222A, 2N5551, MPSA42/92, BD139/140, TIP31C/32C/41C/42C,
+  MJE3055/2955), diodes (1N4001–1N4004, 1N5408, FR107, UF4007, MUR160, 1N5822, BAT85, 1N47xxA and
+  BZX84 zeners, 5 mm LEDs), MOSFETs (2N7000, BS250, AO3400, IRF520/540/540N/640/740/3205,
+  IRLZ44N, IRF9540, IRF9Z34N) and JFETs (2N5457/5458/5460, BF245A, MPF102). They are
+  approximations (no darlingtons yet; op-amps don't model common-mode limits or noise), and
+  schematics using them need TuxSpice's model files to run in LTspice.
 - **Simulation**: netlists the schematic and translates the LTspice dialect for ngspice:
   - parasitics (`Rser`, `Cpar`, ...), one-argument `.tran`, `.lib`, default models, `table()`,
     LTspice functions (`u()`, `uramp()`, `rand()`, `random()`, `white()`, `mc()`, ...),
@@ -57,7 +68,8 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
 - **Waveforms**: stacked plot panes (add above/below, move, delete), colored trace labels, dB and
   phase for AC, a second axis for currents, trace arithmetic with `plot.defs` user functions,
   average/RMS, cursors, FFT, step selection, manual limits, data-point marks, undo/redo of trace
-  changes, notes and annotations (text, arrows, lines, boxes, ellipses, cursor position),
+  changes, notes and annotations (text, arrows, lines, boxes, ellipses, cursor position, phase
+  and gain margin, step labels; move, stretch, duplicate and delete them),
   Execute .MEAS Script, and `.plt` plot settings (save, open, reload).
 - **AI assistants (MCP)**: like LTspice 26.1, TuxSpice has a local MCP server, so assistants such as
   Claude Code, Claude Desktop, Cursor or GitHub Copilot can read, edit and simulate your designs and
@@ -197,8 +209,8 @@ Colors and other preferences are stored in `~/.config/pyltspice`.
 - Some LTspice-only commands are not available: `.machine` state machines, `.timedomain`, the
   Transient Frequency Response analysis, efficiency reports, `.wave` export.
 - Some LTspice menu commands are present but greyed out because they're not implemented yet:
-  the symbol editor (New Symbol), buses (BUS tap), Paste between schematics, marching waveforms,
-  eye diagrams, phase/gain margin annotations and Fast Access files. Images are written as SVG
+  the symbol editor (New Symbol), buses (BUS tap), marching waveforms, eye diagrams, the Nyquist
+  unit circle and Fast Access files. Images are written as SVG
   or PNG instead of EMF.
 - ngspice converges differently from LTspice, so a few circuits fail or need relaxed options.
   TuxSpice retries non-converging runs automatically, for at most 30 seconds per retry.

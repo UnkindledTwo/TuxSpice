@@ -1,0 +1,18 @@
+* TuxSpice model cards for common power and small-signal MOSFETs that LTspice's
+* standard.mos lacks. Written for TuxSpice as VDMOS cards fitted to datasheet typical
+* values: Vto = Vgs(th); half of Rds(on) is the channel at the datasheet gate drive (Kp),
+* half is Rd + Rs; Cgs = Ciss - Crss, Cgdmin = Crss / 2, Cgdmax from Qg, Cjo = Coss.
+* Approximations, not manufacturer models. Vds, Ron, Qg and mfg are picker metadata,
+* as in standard.mos. tests/test_models.py checks Rds(on) and Vgs(th) in ngspice.
+.model 2N7000 VDMOS(Rg=2 Vto=2.1 Rd=0.48 Rs=0.12 Rb=0.6 Kp=0.211 Cgdmax=4.5e-11 Cgdmin=2e-12 Cgs=1.6e-11 Cjo=1.1e-11 Is=1p tt=20n ksubthres=.1 mfg=OnSemi Vds=60 Ron=1.2e+03m Qg=1.5n)
+.model BS250 VDMOS(pchan Rg=2 Vto=-2 Rd=3.6 Rs=0.9 Rb=4.5 Kp=0.0278 Cgdmax=3.6e-11 Cgdmin=2.5e-12 Cgs=2e-11 Cjo=1.5e-11 Is=1p tt=20n ksubthres=.1 mfg=Diodes Vds=-45 Ron=9e+03m Qg=1.2n)
+.model AO3400 VDMOS(Rg=2 Vto=1.05 Rd=0.0076 Rs=0.0019 Rb=0.0095 Kp=11.8 Cgdmax=1.8e-10 Cgdmin=2.5e-11 Cgs=5.8e-10 Cjo=7.5e-11 Is=1p tt=100n ksubthres=.1 mfg=AOS Vds=30 Ron=19m Qg=6n)
+.model IRF520 VDMOS(Rg=2 Vto=3 Rd=0.08 Rs=0.02 Rb=0.1 Kp=1.43 Cgdmax=4.8e-10 Cgdmin=1.7e-11 Cgs=3.26e-10 Cjo=1.5e-10 Is=1p tt=100n ksubthres=.1 mfg=Vishay Vds=100 Ron=200m Qg=16n)
+.model IRF540 VDMOS(Rg=2 Vto=3 Rd=0.024 Rs=0.006 Rb=0.03 Kp=4.76 Cgdmax=2.16e-09 Cgdmin=6e-11 Cgs=1.58e-09 Cjo=5.6e-10 Is=1p tt=100n ksubthres=.1 mfg=Vishay Vds=100 Ron=60m Qg=72n)
+.model IRF540N VDMOS(Rg=2 Vto=3 Rd=0.014 Rs=0.0035 Rb=0.0175 Kp=8.16 Cgdmax=2.13e-09 Cgdmin=2e-11 Cgs=1.92e-09 Cjo=2.5e-10 Is=1p tt=100n ksubthres=.1 mfg=Infineon Vds=100 Ron=35m Qg=71n)
+.model IRF640 VDMOS(Rg=2 Vto=3 Rd=0.06 Rs=0.015 Rb=0.075 Kp=1.9 Cgdmax=2.1e-09 Cgdmin=6.5e-11 Cgs=1.17e-09 Cjo=4e-10 Is=1p tt=100n ksubthres=.1 mfg=Vishay Vds=200 Ron=150m Qg=70n)
+.model IRF740 VDMOS(Rg=2 Vto=3 Rd=0.18 Rs=0.045 Rb=0.225 Kp=0.635 Cgdmax=1.89e-09 Cgdmin=6e-11 Cgs=1.28e-09 Cjo=3.3e-10 Is=1p tt=100n ksubthres=.1 mfg=Vishay Vds=400 Ron=450m Qg=63n)
+.model IRF3205 VDMOS(Rg=2 Vto=3 Rd=0.0026 Rs=0.00065 Rb=0.00325 Kp=44 Cgdmax=4.38e-09 Cgdmin=1.05e-10 Cgs=3.04e-09 Cjo=7.8e-10 Is=1p tt=100n ksubthres=.1 mfg=Infineon Vds=55 Ron=6.5m Qg=146n)
+.model IRLZ44N VDMOS(Rg=2 Vto=1.5 Rd=0.008 Rs=0.002 Rb=0.01 Kp=28.6 Cgdmax=1.44e-09 Cgdmin=6e-11 Cgs=1.58e-09 Cjo=4e-10 Is=1p tt=100n ksubthres=.1 mfg=Infineon Vds=55 Ron=20m Qg=48n)
+.model IRF9540 VDMOS(pchan Rg=2 Vto=-3 Rd=0.06 Rs=0.015 Rb=0.075 Kp=1.9 Cgdmax=1.83e-09 Cgdmin=7e-11 Cgs=1.26e-09 Cjo=5.9e-10 Is=1p tt=100n ksubthres=.1 mfg=Vishay Vds=-100 Ron=150m Qg=61n)
+.model IRF9Z34N VDMOS(pchan Rg=2 Vto=-3 Rd=0.032 Rs=0.008 Rb=0.04 Kp=3.57 Cgdmax=1.02e-09 Cgdmin=5.5e-11 Cgs=5.1e-10 Cjo=2.9e-10 Is=1p tt=100n ksubthres=.1 mfg=Infineon Vds=-55 Ron=80m Qg=34n)

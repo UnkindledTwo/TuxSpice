@@ -711,3 +711,26 @@ def test_move_stretch_duplicate_delete_annotations(qapp):
     v.redo()
     assert abs(v.notes[0].pts[1][0] - 8e-4) < 1e-5
     win.close()
+
+
+def test_pick_new_device_lists_both_libraries(qapp):
+    """Right-click on an npn/zener/pmos: Pick New Transistor/Diode/MOSFET lists LTspice's
+    standard.* parts (when extracted) and TuxSpice's own, filtered to the symbol."""
+    from pyltspice.ui import dialogs
+    npn = dialogs.DevicePicker(None, *dialogs.DEVICE_SYMBOLS["npn"], current="BC337")
+    names = {r["name"] for r in npn.shown}
+    assert "BC337" in names and "BC327" not in names and npn.selected() == "BC337"
+    npn.part.setText("tip")
+    npn._fill()
+    assert {r["name"] for r in npn.shown} >= {"TIP31C", "TIP41C"} and npn.selected().startswith("TIP")
+    zen = dialogs.DevicePicker(None, *dialogs.DEVICE_SYMBOLS["zener"])
+    assert zen.shown and all(r["type"].lower() == "zener" for r in zen.shown)
+    pm = dialogs.DevicePicker(None, *dialogs.DEVICE_SYMBOLS["pmos"])
+    assert {"IRF9540", "BS250"} <= {r["name"] for r in pm.shown} and all(r["channel"] == "P" for r in pm.shown)
+    inst = asc.SymbolInst("npn", 0, 0, "R0", {}, {"InstName": "Q1", "Value": "NPN"})
+    ed = dialogs.AttributeEditor(None, inst, None, pick=dialogs.DEVICE_SYMBOLS["npn"])
+    ed.table.item(ed.KEYS.index("Value"), 1).setText("2N5551")
+    ed.apply()
+    assert inst.attrs["Value"] == "2N5551"
+    for d in (npn, zen, pm, ed):
+        _dispose(d)

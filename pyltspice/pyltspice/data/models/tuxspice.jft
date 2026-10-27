@@ -1,0 +1,10 @@
+* TuxSpice model cards for common JFETs that LTspice's standard.jft lacks.
+* Written for TuxSpice from datasheet typical values: Beta = Idss / Vp^2, Vto = -|Vp| (SPICE
+* convention for both polarities)
+* (pinch-off), Cgs/Cgd from Ciss/Crss. Approximations, not manufacturer models.
+* tests/test_models.py checks Idss and the pinch-off voltage in ngspice.
+.model 2N5457 NJF(Beta=0.000926 Vto=-1.8 Lambda=2m Rd=10 Rs=10 Is=1f Cgs=4e-12 Cgd=3e-12 M=0.4 Pb=0.8 Fc=0.5 mfg=OnSemi)
+.model 2N5458 NJF(Beta=0.00049 Vto=-3.5 Lambda=2m Rd=10 Rs=10 Is=1f Cgs=4e-12 Cgd=3e-12 M=0.4 Pb=0.8 Fc=0.5 mfg=OnSemi)
+.model BF245A NJF(Beta=0.00178 Vto=-1.5 Lambda=2m Rd=10 Rs=10 Is=1f Cgs=3e-12 Cgd=1.1e-12 M=0.4 Pb=0.8 Fc=0.5 mfg=Generic)
+.model MPF102 NJF(Beta=0.0005 Vto=-4 Lambda=2m Rd=10 Rs=10 Is=1f Cgs=4e-12 Cgd=3e-12 M=0.4 Pb=0.8 Fc=0.5 mfg=OnSemi)
+.model 2N5460 PJF(Beta=0.00048 Vto=-2.5 Lambda=2m Rd=10 Rs=10 Is=1f Cgs=5e-12 Cgd=2e-12 M=0.4 Pb=0.8 Fc=0.5 mfg=Generic)

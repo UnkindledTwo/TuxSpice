@@ -19,5 +19,8 @@ pyltspice-mcp = "pyltspice.mcp.bridge:main"
 [tool.setuptools.packages.find]
 include = ["pyltspice*"]
 
+[tool.setuptools.package-data]
+pyltspice = ["data/models/*", "data/sym/*/*.asy"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

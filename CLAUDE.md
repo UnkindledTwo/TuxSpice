@@ -45,6 +45,11 @@ suite (no PCB) and not a new simulator.
   Nothing may print to stdout in the bridge (it is the protocol stream). Replies must stay
   byte-compatible with LTspice's (compact sorted JSON, string scalars, its error texts): after any
   MCP change run `scripts/mcp_diff.py` against LTspice under Wine (`run lt`, `run tux`, `compare`).
+- `data/`: TuxSpice's own parts (package data, not from LTspice): `models/tuxspice.{bjt,dio,mos,jft}`
+  cards and `tuxspice_opamps.lib` (one behavioural core, `TUX_OPAMP`, per-part params) for common
+  parts LTspice lacks, plus `sym/OpAmps/*.asy`. Fitted to datasheet typicals; `tests/test_models.py`
+  simulates every part against those numbers, so add a row there with each new part.
+  `setup_lib.py` + `ui/setup_dialog.py`: first-run extraction of the user's `LTspice64.msi`.
 - Entry points: `pyltspice` → `pyltspice.app:main` (also `python -m pyltspice`); it starts the MCP
   host unless `PYLTSPICE_NO_MCP` is set. `pyltspice-mcp` → `pyltspice.mcp.bridge:main`.
 

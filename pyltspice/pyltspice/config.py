@@ -10,6 +10,11 @@ SUB_DIR = LIB_ROOT / "lib" / "sub"
 CMP_DIR = LIB_ROOT / "lib" / "cmp"
 EXAMPLES_DIR = LIB_ROOT / "examples"
 HELP_DIR = LIB_ROOT / "help"
+# TuxSpice's own parts (package data, not from LTspice): model cards for common parts LTspice
+# lacks (tuxspice.bjt/.dio/.mos/.jft), op-amp subcircuits and their symbols
+BUNDLED_DIR = Path(__file__).resolve().parent / "data"
+BUNDLED_MODELS = BUNDLED_DIR / "models"
+BUNDLED_SYM = BUNDLED_DIR / "sym"
 
 
 def ngspice_path():

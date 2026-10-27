@@ -352,6 +352,101 @@ class PartPicker(QDialog):
         return {key: v for (_, key), v in zip(self.cols, self.shown[r])}
 
 
+# generic semiconductor symbols -> (picker kind, filter); LTspice: "Pick New Transistor" etc.
+DEVICE_SYMBOLS = {
+    "npn": ("bjt", "npn"), "npn2": ("bjt", "npn"), "npn3": ("bjt", "npn"), "npn4": ("bjt", "npn"),
+    "pnp": ("bjt", "pnp"), "pnp2": ("bjt", "pnp"), "pnp4": ("bjt", "pnp"), "lpnp": ("bjt", "pnp"),
+    "diode": ("dio", None), "zener": ("dio", "zener"), "schottky": ("dio", "schottky"),
+    "led": ("dio", "led"), "tvsdiode": ("dio", "zener"), "varactor": ("dio", None),
+    "nmos": ("mos", "n"), "pmos": ("mos", "p"), "njf": ("jft", "njf"), "pjf": ("jft", "pjf"),
+}
+
+
+class DevicePicker(QDialog):
+    """'Select Bipolar Transistor/Diode/MOSFET/JFET': the parts in lib/cmp/standard.* plus
+    TuxSpice's own library (data/models/tuxspice.*), filtered to the symbol's polarity/type."""
+    KINDS = {
+        "bjt": ("Bipolar Transistor", [("Part No.", "name"), ("Mfg", "mfg"), ("Polarity", "kind"),
+                                       ("Vceo", "vceo"), ("Ic", "icrating"), ("Library", "library")]),
+        "dio": ("Diode", [("Part No.", "name"), ("Mfg", "mfg"), ("Type", "type"), ("Vbreakdown", "vpk"),
+                          ("Iave", "iave"), ("Library", "library")]),
+        "mos": ("MOSFET", [("Part No.", "name"), ("Mfg", "mfg"), ("Channel", "channel"), ("Vds", "vds"),
+                           ("Rds(on)", "ron"), ("Qg", "qg"), ("Library", "library")]),
+        "jft": ("JFET", [("Part No.", "name"), ("Mfg", "mfg"), ("Polarity", "kind"), ("Library", "library")]),
+    }
+
+    def __init__(self, parent, kind, only=None, current=""):
+        super().__init__(parent)
+        from ..sim.ltcompat import model_catalog
+        title, self.cols = self.KINDS[kind]
+        self.setWindowTitle(f"Select {title}")
+        kinds = {"bjt": ("npn", "pnp"), "dio": ("d",), "mos": ("vdmos",), "jft": ("njf", "pjf")}[kind]
+        self.rows = []
+        for part in model_catalog():
+            if part["kind"] not in kinds:
+                continue
+            pr = part["params"]
+            row = {"name": part["name"], "library": part["library"], "kind": part["kind"].upper(),
+                   "channel": "P" if part["pchan"] else "N", **{k: v.strip('"').replace("_", " ") for k, v in pr.items()}}
+            if only and not self._matches(kind, only, part, row):
+                continue
+            self.rows.append(row)
+        self.rows.sort(key=lambda r: r["name"].lower())
+        lay = QGridLayout(self)
+        show_all = QPushButton("Show All")
+        lay.addWidget(show_all, 0, 0)
+        lay.addWidget(QLabel("Part No.:"), 0, 1)
+        self.part = QLineEdit()
+        self.part.setPlaceholderText("e.g. 2N3904, IRF, LED")
+        lay.addWidget(self.part, 0, 2)
+        filt = QPushButton("Filter")
+        lay.addWidget(filt, 0, 3)
+        lay.addLayout(_ok_cancel_column(self), 0, 4, 2, 1)
+        self.table = QTableWidget(0, len(self.cols))
+        self.table.setHorizontalHeaderLabels([c for c, _ in self.cols])
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.doubleClicked.connect(self.accept)
+        self.table.verticalHeader().setDefaultSectionSize(self.fontMetrics().height() + 2)
+        self.table.setShowGrid(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.table, 1, 0, 1, 4)
+        show_all.clicked.connect(lambda: (self.part.clear(), self._fill()))
+        filt.clicked.connect(self._fill)
+        self.part.textEdited.connect(self._fill)          # narrows as you type
+        self.setMinimumSize(720, 400)
+        self.current = current
+        self._fill()
+        popup_at_cursor(self)
+
+    @staticmethod
+    def _matches(kind, only, part, row):
+        if kind == "bjt" or kind == "jft":
+            return part["kind"] == only
+        if kind == "mos":
+            return row["channel"].lower() == only
+        return row.get("type", "").lower() == only           # diodes: zener/schottky/led
+
+    def _fill(self, *_):
+        q = self.part.text().strip().lower()
+        self.shown = [r for r in self.rows if not q or q in r["name"].lower() or q in r.get("mfg", "").lower()]
+        self.table.setRowCount(len(self.shown))
+        for i, row in enumerate(self.shown):
+            for c, (_, key) in enumerate(self.cols):
+                self.table.setItem(i, c, QTableWidgetItem(row.get(key, "")))
+        self.table.resizeColumnsToContents()
+        if self.shown:
+            names = [r["name"].lower() for r in self.shown]
+            self.table.selectRow(names.index(self.current.lower()) if self.current.lower() in names else 0)
+            self.table.scrollToItem(self.table.item(self.table.currentRow(), 0), QTableWidget.PositionAtCenter)
+
+    def selected(self):
+        r = self.table.currentRow()
+        return self.shown[r]["name"] if 0 <= r < len(self.shown) else None
+
+
 class RLCDialog(QDialog):
     """Resistor / Capacitor / Inductor editors, laid out like LTspice's: part info and a
     'Select ...' button on top, OK/Cancel at the right, the properties below."""
@@ -635,12 +730,19 @@ class AttributeEditor(QDialog):
     KEYS = ["Prefix", "InstName", "SpiceModel", "Value", "Value2", "SpiceLine", "SpiceLine2"]
     WIN = {"InstName": 0, "Value": 3, "SpiceModel": 38, "SpiceLine": 39, "SpiceLine2": 40, "Value2": 123}
 
-    def __init__(self, parent, inst: asc.SymbolInst, sym=None):
+    def __init__(self, parent, inst: asc.SymbolInst, sym=None, pick=None):
+        """pick: (kind, filter) from DEVICE_SYMBOLS adds LTspice's Pick New Transistor/... button."""
         super().__init__(parent)
         self.inst, self.sym = inst, sym
         self.setWindowTitle("Component Attribute Editor")
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel(f"Open Symbol: {sym.path if sym and sym.path else inst.symbol}"))
+        self.pick = pick
+        if pick:
+            what = {"bjt": "Transistor", "dio": "Diode", "mos": "MOSFET", "jft": "JFET"}[pick[0]]
+            btn = QPushButton(f"Pick New {what}")
+            btn.clicked.connect(self.pick_part)
+            lay.addWidget(btn, 0, Qt.AlignLeft)
         self.table = QTableWidget(len(self.KEYS), 3)
         self.table.setHorizontalHeaderLabels(["Attribute", "Value", "Vis."])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -661,6 +763,12 @@ class AttributeEditor(QDialog):
         self.table.setMinimumSize(520, 260)
         lay.addWidget(self.table)
         _buttons(self, lay)
+
+    def pick_part(self):
+        row = self.KEYS.index("Value")
+        dlg = DevicePicker(self, *self.pick, current=self.table.item(row, 1).text())
+        if dlg.exec() == QDialog.Accepted and dlg.selected():
+            self.table.item(row, 1).setText(dlg.selected())
 
     def _visible(self, key):
         idx = self.WIN.get(key)

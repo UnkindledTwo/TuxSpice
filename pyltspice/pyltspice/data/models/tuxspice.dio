@@ -1,0 +1,36 @@
+* TuxSpice model cards for common diodes that LTspice's standard.dio lacks.
+* Written for TuxSpice from datasheet typical values: forward curves are two-point fits
+* (IS, N, RS through a low- and a high-current Vf), zeners put IBV = Izt at BV = Vz with
+* NBV giving the datasheet Zzt, recovery time -> TT. Approximations, not manufacturer
+* models. Iave, Vpk, mfg and type are picker metadata, as in standard.dio.
+* tests/test_models.py checks Vf and Vz of each in ngspice.
+* rectifiers
+.model 1N4001 D(IS=2.8n N=1.74 RS=43m CJO=15p M=0.33 TT=5u BV=50 IBV=5u Iave=1 Vpk=50 mfg=Generic type=silicon)
+.model 1N4002 D(IS=2.8n N=1.74 RS=43m CJO=15p M=0.33 TT=5u BV=100 IBV=5u Iave=1 Vpk=100 mfg=Generic type=silicon)
+.model 1N4004 D(IS=2.8n N=1.74 RS=43m CJO=15p M=0.33 TT=5u BV=400 IBV=5u Iave=1 Vpk=400 mfg=Generic type=silicon)
+.model 1N5408 D(IS=8n N=1.74 RS=15m CJO=40p M=0.33 TT=5u BV=1000 IBV=5u Iave=3 Vpk=1000 mfg=Generic type=silicon)
+.model FR107 D(IS=6.7n N=1.9 RS=0.176 CJO=15p M=0.33 TT=300n BV=1000 IBV=5u Iave=1 Vpk=1000 mfg=Generic type=silicon)
+.model UF4007 D(IS=14n N=2 RS=0.366 CJO=10p M=0.33 TT=50n BV=1000 IBV=5u Iave=1 Vpk=1000 mfg=Vishay type=silicon)
+.model MUR160 D(IS=8.8n N=1.8 RS=0.1875 CJO=12p M=0.33 TT=35n BV=600 IBV=5u Iave=1 Vpk=600 mfg=OnSemi type=silicon)
+* Schottky
+.model 1N5822 D(IS=5.8u N=1.1 RS=25m CJO=300p M=0.5 EG=0.69 XTI=2 BV=40 IBV=1m Iave=3 Vpk=40 mfg=Generic type=Schottky)
+.model BAT85 D(IS=4.8n N=1 RS=3.6 CJO=10p M=0.4 EG=0.69 XTI=2 BV=30 IBV=2u Iave=200m Vpk=30 mfg=Nexperia type=Schottky)
+* zeners (1N47xxA: 1 W; 1N52xxB, BZX84: 0.5 W / 0.25 W)
+.model 1N4728A D(IS=2p N=1.2 RS=0.5 CJO=450p M=0.4 BV=3.262 IBV=76m NBV=29.4 Iave=276m Vpk=3.3 mfg=Generic type=Zener)
+.model 1N4732A D(IS=2p N=1.2 RS=0.5 CJO=350p M=0.4 BV=4.674 IBV=53m NBV=16.4 Iave=213m Vpk=4.7 mfg=Generic type=Zener)
+.model 1N4733A D(IS=2p N=1.2 RS=0.5 CJO=300p M=0.4 BV=5.076 IBV=49m NBV=13.3 Iave=196m Vpk=5.1 mfg=Generic type=Zener)
+.model 1N4734A D(IS=2p N=1.2 RS=0.5 CJO=280p M=0.4 BV=5.578 IBV=45m NBV=8.7 Iave=178m Vpk=5.6 mfg=Generic type=Zener)
+.model 1N4739A D(IS=2p N=1.2 RS=0.5 CJO=150p M=0.4 BV=9.086 IBV=28m NBV=5.4 Iave=110m Vpk=9.1 mfg=Generic type=Zener)
+.model 1N4740A D(IS=2p N=1.2 RS=0.5 CJO=140p M=0.4 BV=9.988 IBV=25m NBV=6.8 Iave=100m Vpk=10 mfg=Generic type=Zener)
+.model 1N4742A D(IS=2p N=1.2 RS=0.5 CJO=120p M=0.4 BV=11.99 IBV=21m NBV=7.3 Iave=83m Vpk=12 mfg=Generic type=Zener)
+.model 1N4744A D(IS=2p N=1.2 RS=0.5 CJO=100p M=0.4 BV=14.99 IBV=17m NBV=9.2 Iave=67m Vpk=15 mfg=Generic type=Zener)
+.model 1N4746A D(IS=2p N=1.2 RS=0.5 CJO=80p M=0.4 BV=17.99 IBV=14m NBV=10.8 Iave=56m Vpk=18 mfg=Generic type=Zener)
+.model 1N5231B D(IS=1p N=1.2 RS=1 CJO=200p M=0.4 BV=5.08 IBV=20m NBV=13.2 Iave=100m Vpk=5.1 mfg=OnSemi type=Zener)
+.model BZX84C5V1 D(IS=0.5p N=1.2 RS=2 CJO=100p M=0.4 BV=5.09 IBV=5m NBV=11.6 Iave=50m Vpk=5.1 mfg=Nexperia type=Zener)
+.model BZX84C3V3 D(IS=0.5p N=1.2 RS=2 CJO=150p M=0.4 BV=3.29 IBV=5m NBV=18.4 Iave=75m Vpk=3.3 mfg=Nexperia type=Zener)
+* 5 mm indicator LEDs (Vf at 20 mA: red 2.0, yellow 2.05, green 2.2, blue and white 3.1)
+.model LED_RED D(IS=2.2E-18 N=2 RS=5 CJO=30p BV=5 IBV=10u Iave=30m Vpk=5 mfg=Generic type=LED)
+.model LED_YELLOW D(IS=8.4E-19 N=2 RS=5 CJO=30p BV=5 IBV=10u Iave=30m Vpk=5 mfg=Generic type=LED)
+.model LED_GREEN D(IS=4.6E-20 N=2 RS=5 CJO=30p BV=5 IBV=10u Iave=30m Vpk=5 mfg=Generic type=LED)
+.model LED_BLUE D(IS=6.4E-22 N=2.5 RS=10 CJO=30p BV=5 IBV=10u Iave=30m Vpk=5 mfg=Generic type=LED)
+.model LED_WHITE D(IS=6.4E-22 N=2.5 RS=10 CJO=30p BV=5 IBV=10u Iave=30m Vpk=5 mfg=Generic type=LED)

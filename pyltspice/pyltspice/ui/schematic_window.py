@@ -250,7 +250,7 @@ class SchematicWindow(QWidget):
                     dlg.apply()
                     accepted = True
         else:
-            dlg = dialogs.AttributeEditor(self, inst, sym)
+            dlg = dialogs.AttributeEditor(self, inst, sym, pick=dialogs.DEVICE_SYMBOLS.get(base))
             if dlg.exec() == QDialog.Accepted:
                 dlg.apply()
                 accepted = True

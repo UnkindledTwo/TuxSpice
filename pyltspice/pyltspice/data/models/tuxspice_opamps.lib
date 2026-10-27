@@ -1,0 +1,79 @@
+* TuxSpice op-amp macro-models for common third-party op-amps (LTspice ships ADI parts only).
+* Written for TuxSpice: one behavioural core, TUX_OPAMP, set per part from datasheet typical
+* values. It models open-loop gain and gain-bandwidth (one dominant pole), slew rate, input
+* offset voltage, bias and offset currents, input resistance, quiescent current, output
+* swing headroom to each rail, output resistance and short-circuit current. It does not
+* model input common-mode limits, phase reversal, noise, a second pole or temperature.
+* Dual/quad parts are one amplifier per subcircuit (place one symbol per section).
+* Pins: In+ In- V+ V- OUT (same order as LTspice's opamp2 symbol).
+* tests/test_models.py checks GBW, slew rate, swing and offset of each in ngspice.
+
+.subckt TUX_OPAMP inp inn vp vn out params: Aol=100k GBW=1Meg SR=1Meg Vos=1m Ib=10n Ios=1n
++ Rin=1Meg Iq=1m Vohr=1.5 Volr=1.5 Rout=50 Ilim=25m
+* input: offset voltage, bias currents (Ib > 0 flows into the pins), differential resistance
+Vos ip inp {Vos}
+Iip ip vn {Ib+Ios/2}
+Iin inn vn {Ib-Ios/2}
+Rin ip inn {Rin}
+* quiescent supply current
+Iq vp vn {Iq}
+* gain stage: Imax*tanh(gm*Vd/Imax) into Rg || Cg, so GBW = gm/(2 pi Cg) and SR = Imax/Cg
+Bmid mid 0 V=(V(vp)+V(vn))/2
+Rg n1 mid 1Meg
+Cg n1 mid {Aol/(1Meg*6.2832*GBW)}
+Bgm mid n1 I={SR*Aol/(1Meg*6.2832*GBW)}*tanh((V(ip)-V(inn))*6.2832*GBW/SR)
+* swing limits: the gain node is clamped short of each rail (no wind-up in saturation)
+Bhi hi 0 V=V(vp)-{Vohr}
+Blo lo 0 V=V(vn)+{Volr}
+Dhi n1 hi TUX_DCLAMP
+Dlo lo n1 TUX_DCLAMP
+* output: Rout with a smooth current limit, sourcing from V+ and sinking into V-
+Bsrc vp out I=0.5*({Ilim}*tanh((V(n1)-V(out))/({Rout}*{Ilim}))+sqrt(({Ilim}*tanh((V(n1)-V(out))/({Rout}*{Ilim})))**2+1e-12))
+Bsnk out vn I=0.5*(sqrt(({Ilim}*tanh((V(n1)-V(out))/({Rout}*{Ilim})))**2+1e-12)-{Ilim}*tanh((V(n1)-V(out))/({Rout}*{Ilim})))
+.model TUX_DCLAMP D(Is=1e-14 N=0.1)
+.ends TUX_OPAMP
+
+* general purpose, bipolar
+.subckt LM741 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=1Meg SR=0.5Meg Vos=1m Ib=80n Ios=20n Rin=2Meg Iq=1.7m Vohr=2 Volr=2 Rout=75 Ilim=25m
+.ends LM741
+.subckt UA741 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=1Meg SR=0.5Meg Vos=1m Ib=80n Ios=20n Rin=2Meg Iq=1.7m Vohr=2 Volr=2 Rout=75 Ilim=25m
+.ends UA741
+* single supply, input and output to the negative rail (PNP inputs: bias current flows out)
+.subckt LM358 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=100k GBW=1Meg SR=0.3Meg Vos=2m Ib=-20n Ios=2n Rin=10Meg Iq=0.35m Vohr=1.5 Volr=0.02 Rout=50 Ilim=30m
+.ends LM358
+.subckt LM324 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=100k GBW=1.2Meg SR=0.5Meg Vos=2m Ib=-20n Ios=2n Rin=10Meg Iq=0.175m Vohr=1.5 Volr=0.02 Rout=50 Ilim=30m
+.ends LM324
+.subckt LMV358 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=100k GBW=1Meg SR=1Meg Vos=1.7m Ib=-15n Ios=1n Rin=10Meg Iq=0.13m Vohr=0.01 Volr=0.01 Rout=60 Ilim=50m
+.ends LMV358
+* JFET input
+.subckt TL071 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=3Meg SR=13Meg Vos=3m Ib=65p Ios=5p Rin=1T Iq=1.4m Vohr=1.5 Volr=1.5 Rout=100 Ilim=40m
+.ends TL071
+.subckt TL072 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=3Meg SR=13Meg Vos=3m Ib=65p Ios=5p Rin=1T Iq=1.4m Vohr=1.5 Volr=1.5 Rout=100 Ilim=40m
+.ends TL072
+.subckt TL074 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=3Meg SR=13Meg Vos=3m Ib=65p Ios=5p Rin=1T Iq=1.4m Vohr=1.5 Volr=1.5 Rout=100 Ilim=40m
+.ends TL074
+.subckt TL081 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=3Meg SR=13Meg Vos=3m Ib=30p Ios=5p Rin=1T Iq=1.4m Vohr=1.5 Volr=1.5 Rout=100 Ilim=40m
+.ends TL081
+.subckt TL082 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=200k GBW=3Meg SR=13Meg Vos=3m Ib=30p Ios=5p Rin=1T Iq=1.4m Vohr=1.5 Volr=1.5 Rout=100 Ilim=40m
+.ends TL082
+* audio, low noise bipolar
+.subckt NE5532 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=100k GBW=10Meg SR=9Meg Vos=0.5m Ib=200n Ios=10n Rin=300k Iq=4m Vohr=1.5 Volr=1.5 Rout=30 Ilim=38m
+.ends NE5532
+.subckt LM833 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=316k GBW=15Meg SR=7Meg Vos=0.3m Ib=300n Ios=10n Rin=175k Iq=2.5m Vohr=1.5 Volr=1.5 Rout=40 Ilim=40m
+.ends LM833
+* CMOS, rail-to-rail input and output, 1.8 to 6 V
+.subckt MCP6002 1 2 3 4 5
+X1 1 2 3 4 5 TUX_OPAMP Aol=400k GBW=1Meg SR=0.6Meg Vos=1m Ib=1p Ios=1p Rin=10T Iq=0.1m Vohr=0.025 Volr=0.025 Rout=100 Ilim=23m
+.ends MCP6002

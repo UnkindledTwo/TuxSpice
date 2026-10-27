@@ -186,6 +186,13 @@ Open:
 - LTspice-only analysis forms: `.step` over model parameters and temperature, `.wave`, `.net`.
 - Efficiency report, `.wav` export, more PCB netlist formats (LTspice has ~20; we write 4).
 
+- Done: TuxSpice's own model library (`pyltspice/data/models`, symbols in `data/sym/OpAmps`): 16
+  BJTs, 26 diodes/zeners/LEDs, 12 MOSFETs, 5 JFETs and 13 op-amps that LTspice's libraries lack,
+  fitted to datasheet typicals and simulated against them in `tests/test_models.py`. Found by
+  name like `standard.*` (LTspice's cards win a clash). "Pick New Transistor/Diode/MOSFET/JFET"
+  lists both libraries. Next: darlingtons (TIP120/122 need a subckt symbol), comparators
+  (LM393/LM339), 555 timer, LM317/78xx regulators.
+
 ### 4. Packaging
 - Done: `.desktop` file, icon and MIME types for `.asc`/`.raw` (`scripts/install_desktop.py`).
 - Done: first-run setup (`ui/setup_dialog.py`, `setup_lib.py`): finds `LTspice*.msi` in Downloads,

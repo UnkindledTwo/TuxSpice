@@ -285,3 +285,13 @@ def test_ac_device_currents_match_ltspice(tmp_path):
         assert 20 * np.log10(abs(i)) == pytest.approx(-84.0535, abs=1e-3)
         assert np.degrees(np.angle(i)) == pytest.approx(-93.595, abs=1e-2)
         assert np.allclose(vs.get("I(C1)"), -vs.get("I(R1)"))
+
+
+@needs_ngspice
+def test_op_keeps_its_first_vector(tmp_path):
+    """An operating point has no sweep: its first variable (here V(a0)) is a signal, not an
+    x axis, and must not be hidden."""
+    res = Simulator("* op\nI0 0 a0 1m\nD0 a0 0 D\n.op\n.end\n", tmp_path / "op").run()
+    assert res.ok, res.errors
+    vs = VectorSet(res.plots[0])
+    assert "V(a0)" in vs.names() and 0.5 < float(np.real(vs.get("V(a0)"))[0]) < 0.9

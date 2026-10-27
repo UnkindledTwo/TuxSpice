@@ -24,7 +24,7 @@ Status: ✅ implemented, ◐ partial, ❌ missing.
 | Drag a box to select several objects for the active command | H basicschematicediting | ✅ |
 | A wire drawn through a component is cut so the component sits in series | H basicschematicediting | ✅ |
 | Right-click on attribute text edits that attribute (Expert mode) | H editingcomponents | ✅ |
-| Right-click on component body opens the type-specific editor (Assisted mode) | H editingcomponents | ✅ R/C/L/V/I; ◐ others use the attribute editor |
+| Right-click on component body opens the type-specific editor (Assisted mode) | H editingcomponents | ✅ R/C/L/V/I; Q/D/M/J get the attribute editor with Pick New Transistor/Diode/MOSFET/JFET (LTspice + TuxSpice models); ◐ others use the attribute editor |
 | Ctrl+right-click on body opens the Component Attribute Editor (Super Expert) | H editingcomponents | ✅ |
 | Net names starting with `$G_` are global, drawn with a box | H labelanodename | ◐ drawn; netlisting not global across hierarchy |
 | I/O port labels drawn differently, no netlist effect | H labelanodename | ◐ simple box outline |

@@ -65,7 +65,7 @@ def resolve_file(name: str, search_dirs) -> Path | None:
     p = Path(name)
     if p.is_absolute():
         return p if p.exists() else None
-    for d in list(search_dirs) + [config.SUB_DIR, config.CMP_DIR, config.SUB_DIR.parent]:
+    for d in list(search_dirs) + [config.SUB_DIR, config.CMP_DIR, config.SUB_DIR.parent, config.BUNDLED_MODELS]:
         for ext in LIB_EXTS:
             cand = _ci_path(Path(d) / (name + ext))
             if cand is not None and cand.is_file():
@@ -115,11 +115,16 @@ def _lib_funcs(path: str) -> set:
         return set()
 
 
+def model_card_files():
+    """lib/cmp/standard.* then TuxSpice's own cards; the first definition of a name wins."""
+    return [config.CMP_DIR / f for f in STANDARD_FILES] + \
+        [config.BUNDLED_MODELS / f.replace("standard", "tuxspice") for f in STANDARD_FILES]
+
+
 @lru_cache(maxsize=1)
 def _standard_cards():
     cards = {}
-    for fname in STANDARD_FILES:
-        p = config.CMP_DIR / fname
+    for p in model_card_files():
         if not p.exists():
             continue
         for line in join_continuations(decode(p.read_bytes())[0]):
@@ -127,6 +132,28 @@ def _standard_cards():
             if m:
                 cards.setdefault(m.group(1).lower(), line.strip())
     return cards
+
+
+@lru_cache(maxsize=1)
+def model_catalog():
+    """Every part in the model-card libraries, for the Pick New Transistor/Diode/... dialog:
+    [{name, kind (npn, pnp, d, vdmos, njf, pjf...), params {lower: value}, library}], first
+    definition of a name only (LTspice's before TuxSpice's)."""
+    out, seen = [], set()
+    for p in model_card_files():
+        if not p.exists():
+            continue
+        lib = "TuxSpice" if p.parent == config.BUNDLED_MODELS else "LTspice"
+        for line in join_continuations(decode(p.read_bytes())[0]):
+            m = re.match(r"\s*\.model\s+(\S+)\s+(?:ako:\s*\S+\s+)?([a-zA-Z]+)\s*\(?(.*?)\)?\s*$", line, re.I)
+            if not m or m.group(1).lower() in seen:
+                continue
+            seen.add(m.group(1).lower())
+            params = {k.lower(): v for k, v in re.findall(r"([A-Za-z_][\w.]*)\s*=\s*(\"[^\"]*\"|\S+)", m.group(3))}
+            flags = {t.lower() for t in re.split(r"[\s,]+", re.sub(r"\S+\s*=\s*\S+", "", m.group(3))) if t}
+            out.append({"name": m.group(1), "kind": m.group(2).lower(), "params": params,
+                        "pchan": "pchan" in flags, "library": lib})
+    return out
 
 
 def standard_model(name: str) -> str | None:

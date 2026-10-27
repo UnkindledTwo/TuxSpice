@@ -51,14 +51,20 @@ class VectorSet:
         self.radians = radians      # LTspice: Settings > Waveforms > Use radian measure
         self.defs = defs            # plot.defs text: .func / .param for expressions
         self.by_name = {}
-        for v in plot.variables[1:]:
+        for v in self._signals():
             ln = lt_name(v.name)
             if ln:
                 self.by_name.setdefault(ln.lower(), v.index)
 
+    def _signals(self):
+        """Every variable but the sweep (time, frequency...). An operating point or .tf
+        result has no sweep, so its first variable is a signal too."""
+        has_scale = self.plot.analysis not in ("op", "tf")
+        return self.plot.variables[1 if has_scale else 0:]
+
     def names(self):
         out = []
-        for v in self.plot.variables[1:]:
+        for v in self._signals():
             ln = lt_name(v.name)
             if ln and self.by_name.get(ln.lower()) == v.index:
                 out.append(ln)
