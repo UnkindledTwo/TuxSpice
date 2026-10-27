@@ -165,6 +165,23 @@ def plot_defs_path():
     return (Path(user).expanduser() if user else config.DATA_DIR) / "plot.defs"
 
 
+def run_options():
+    """The Settings values that shape a simulation run (sim.runner.RunOptions)."""
+    from pathlib import Path
+    from ..sim.runner import RunOptions
+    user = get("paths/user_dir")
+    threads = get("spice/threads")
+    threads = threads if threads != DEFAULTS["spice/threads"] else ""   # ngspice's own default
+    return RunOptions(
+        default_devices=get("netlist/default_devices"), default_libraries=get("netlist/default_libraries"),
+        user_dir=Path(user).expanduser() if user else None,
+        save_currents=get("save/device_currents"), save_subckt_voltages=get("save/subckt_voltages"),
+        save_subckt_currents=get("save/subckt_currents"), no_terminal_currents=get("save/no_base_currents"),
+        ascii_raw=get("compression/ascii"), threads=int(threads) if str(threads).isdigit() else 0,
+        solver=get("spice/solver"), mc_reseed=get("hacks/mc_clock"),
+        expanded_listing=get("operation/expanded_listing"), warn_no_rser=get("operation/warn_no_rser"))
+
+
 def spice_options() -> str:
     """A .options line for the SPICE-tab values that differ from LTspice's defaults (empty if none).
     LTspice's own defaults are left alone so runs match what the translation layer was tuned for."""
@@ -290,11 +307,10 @@ class SettingsDialog(QDialog):
         v = QVBoxLayout(page)
         v.addWidget(self._check("operation/marching_waveforms", "Marching Waveforms",
                                 tip="Plots are drawn when ngspice finishes; incremental plotting " + NOT_YET[4:]))
-        v.addWidget(self._check("operation/expanded_listing", "Generate Expanded Listing", tip=NOT_YET))
+        v.addWidget(self._check("operation/expanded_listing", "Generate Expanded Listing"))
         v.addWidget(self._check("operation/save_on_run", "Save all open files on start of simulation"))
         v.addWidget(self._check("operation/delete_raw", "Automatically delete .raw files"))
-        v.addWidget(self._check("operation/warn_no_rser", "Warn if no Rser is specified for inductors",
-                                tip=NOT_YET))
+        v.addWidget(self._check("operation/warn_no_rser", "Warn if no Rser is specified for inductors"))
         v.addWidget(_row("Background image[*]:", self._combo(
             "operation/background", ["Oscilloscope", "None", "User supplied (~/.config/pyltspice/TuxSpice.jpg)"])))
         v.addWidget(_row("Toolbar Style[*]:", self._combo("operation/toolbar_style", ["Default"])))
@@ -309,14 +325,14 @@ class SettingsDialog(QDialog):
     def _tab_schematic(self, page):
         g = QGridLayout(page)
         left = QVBoxLayout()
-        left.addWidget(self._check("drafting/allow_pin_shorts", "Allow direct component pin shorts", tip=NOT_YET))
+        left.addWidget(self._check("drafting/allow_pin_shorts", "Allow direct component pin shorts"))
         left.addWidget(self._check("drafting/autoscroll", "Automatically scroll the view"))
         left.addWidget(self._check("view/mark_anchors", "Mark text justification anchor points"))
         left.addWidget(self._check("drafting/mark_unconnected", "Mark unconnected pins"))
         left.addWidget(self._check("view/grid", "Show schematic grid points"))
         left.addWidget(self._check("drafting/ortho_wires", "Orthogonal snap wires"))
-        left.addWidget(self._check("drafting/ortho_stretch", "Ortho stretch mode", tip=NOT_YET))
-        left.addWidget(self._check("drafting/cut_angled", "Cut angled wires during stretch", tip=NOT_YET))
+        left.addWidget(self._check("drafting/ortho_stretch", "Ortho stretch mode"))
+        left.addWidget(self._check("drafting/cut_angled", "Cut angled wires during stretch"))
         left.addWidget(_row("Un-do history size:", self._spin("drafting/undo_size", 10, 100000)))
         left.addWidget(_row("Pen thickness[*]:", self._spin("drafting/pen_thickness", 1, 5)))
         left.addWidget(self._check("drafting/title_blocks", "Show Title Blocks",
@@ -404,9 +420,12 @@ class SettingsDialog(QDialog):
         left.addWidget(box)
         box = QGroupBox("Engine")
         bv = QVBoxLayout(box)
-        bv.addWidget(_row("Solver[*]:", self._combo("spice/solver", ["Normal", "Alternate"]), tip=NO_NGSPICE))
-        bv.addWidget(_row("Max threads:", self._combo("spice/threads", [str(i) for i in range(1, 33)]),
-                          tip=NO_NGSPICE))
+        solver = _row("Solver[*]:", self._combo("spice/solver", ["Normal", "Alternate"]))
+        solver.setToolTip("Normal: ngspice's KLU solver. Alternate: Sparse 1.3, ngspice's classic solver.")
+        bv.addWidget(solver)
+        threads = _row("Max threads:", self._combo("spice/threads", [str(i) for i in range(1, 33)]))
+        threads.setToolTip("ngspice's num_threads (OpenMP device evaluation, when ngspice is built with it).")
+        bv.addWidget(threads)
         bv.addWidget(_row("Matrix Compiler:", self._combo("spice/matrix", ["object code", "assembly"]),
                           tip=NO_NGSPICE))
         bv.addWidget(_row("Thread Priority[*]:", self._combo("spice/priority", ["low", "medium", "high"]),
@@ -429,13 +448,13 @@ class SettingsDialog(QDialog):
     def _tab_save_defaults(self, page):
         v = QVBoxLayout(page)
         v.addWidget(QLabel('These defaults are used when there is no explicit ".save" command'))
-        tip = "ngspice always saves node voltages and device currents in TuxSpice runs."
-        v.addWidget(self._check("save/device_currents", "Save Device Currents", tip=tip))
-        v.addWidget(self._check("save/subckt_voltages", "Save Subcircuit Node Voltages", tip=tip))
-        v.addWidget(self._check("save/subckt_currents", "Save Subcircuit Device Currents", tip=tip))
-        v.addWidget(self._check("save/no_base_currents", "Don't save Ib(), Ie(), Is(), Ig(), or Ix()", tip=tip))
+        v.addWidget(self._check("save/device_currents", "Save Device Currents"))
+        v.addWidget(self._check("save/subckt_voltages", "Save Subcircuit Node Voltages"))
+        v.addWidget(self._check("save/subckt_currents", "Save Subcircuit Device Currents"))
+        v.addWidget(self._check("save/no_base_currents", "Don't save Ib(), Ie(), Is(), Ig(), or Ix()"))
         v.addSpacing(12)
-        v.addWidget(self._check("save/internal_voltages", "Save Internal Device Voltages", tip=tip))
+        v.addWidget(self._check("save/internal_voltages", "Save Internal Device Voltages",
+                                tip="ngspice doesn't write internal device nodes to its .raw files."))
         self._footer(v)
 
     def _tab_netlist_options(self, page):
@@ -450,12 +469,13 @@ class SettingsDialog(QDialog):
         v.addWidget(box)
         box = QGroupBox("Semiconductor Models")
         bv = QVBoxLayout(box)
-        tip = ("The ngspice translation layer always adds LTspice's default models and the "
-               "standard libraries; switching them off would break most schematics.")
-        for key, text in (("netlist/default_devices", "Default Devices[*]"),
-                          ("netlist/default_libraries", "Default Libraries[*]")):
+        for key, text, tip in (
+                ("netlist/default_devices", "Default Devices[*]",
+                 "Add '.model D D' and the like for parts without a model. Off: SPICE's defaults are "
+                 "still used, with a warning."),
+                ("netlist/default_libraries", "Default Libraries[*]",
+                 "Find models by name in standard.*, TuxSpice's library and your user.dio/.bjt/.mos/.jft.")):
             cb = QCheckBox(text)
-            cb.setEnabled(False)
             cb.setToolTip(tip)
             self.w[key] = cb
             bv.addWidget(cb)
@@ -464,9 +484,9 @@ class SettingsDialog(QDialog):
 
     def _tab_compression(self, page):
         v = QVBoxLayout(page)
-        tip = "TuxSpice stores ngspice's uncompressed binary .raw files."
-        for key, text in (("compression/ascii", "ASCII data files"),
-                          ("compression/tran_only", "Only compress transient analyses"),
+        tip = "ngspice's .raw files are never compressed."
+        v.addWidget(self._check("compression/ascii", "ASCII data files"))
+        for key, text in (("compression/tran_only", "Only compress transient analyses"),
                           ("compression/first_order", "Enable 1st Order Compression"),
                           ("compression/second_order", "Enable 2nd Order Compression")):
             v.addWidget(self._check(key, text, tip=tip))
@@ -478,8 +498,7 @@ class SettingsDialog(QDialog):
 
     def _tab_search_paths(self, page):
         v = QVBoxLayout(page)
-        v.addWidget(self._check("paths/no_subdirs", "Don't place symbols from schematic subdirectories ",
-                                tip="TuxSpice only looks in the schematic's own folder, never its subfolders."))
+        v.addWidget(self._check("paths/no_subdirs", "Don't place symbols from schematic subdirectories "))
         box = QGroupBox("User files (.lib, .asy, .sub, .defs, user.dio, user.res, etc)[*]")
         h = QHBoxLayout(box)
         e = QLineEdit()
@@ -540,7 +559,7 @@ class SettingsDialog(QDialog):
         v.addWidget(self._check("hacks/no_jfet_isr", "Don't temperature scale JFET Isr", tip=tip))
         v.addWidget(self._check("hacks/gmin_isources", "Add GMIN across current sources", tip=tip))
         v.addWidget(self._check("hacks/ind_damping", "Supply a min. inductor damping if no Rpar is given", tip=tip))
-        v.addWidget(self._check("hacks/mc_clock", "Use the clock to reseed the MC generator", tip=tip))
+        v.addWidget(self._check("hacks/mc_clock", "Use the clock to reseed the MC generator"))
         note = QLabel("Note: To use default Rser=0 for all inductors\nadd '.options thev_induc=1' to the circuit")
         note.setAlignment(Qt.AlignCenter)
         v.addWidget(note)

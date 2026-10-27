@@ -165,10 +165,14 @@ def rename_copies(sch, objs, lib, local_dirs=()):
 
 # ---------------------------------------------------------------- wire cleanup
 
+# Settings > Schematic > "Allow direct component pin shorts" (LTspice's default: off)
+ALLOW_PIN_SHORTS = False
+
+
 def cleanup_wires(sch: asc.Schematic, lib, local_dirs=()):
     """Split wires at pins/endpoints lying on them, drop zero-length and duplicate
     wires, and remove segments that short two pins of the same component (LTspice
-    cuts a wire drawn straight through a resistor)."""
+    cuts a wire drawn straight through a resistor, unless pin shorts are allowed)."""
     pin_owner = {}
     for inst in sch.symbols:
         for pr in symbol_pins(inst, lib.get(inst.symbol, local_dirs)):
@@ -203,7 +207,7 @@ def cleanup_wires(sch: asc.Schematic, lib, local_dirs=()):
             if a == b or key in seen:
                 continue
             owners = pin_owner.get(a, set()) & pin_owner.get(b, set())
-            if owners:
+            if owners and not ALLOW_PIN_SHORTS:
                 continue        # shorts the pins of a single component
             seen.add(key)
         keep.append(item)

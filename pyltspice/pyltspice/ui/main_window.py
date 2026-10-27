@@ -1155,9 +1155,10 @@ class MainWindow(QMainWindow):
         if opts:
             from ..sim.runner import _with_options
             text = _with_options(text, opts)
+        from .settings_dialog import run_options
         user = get("paths/user_dir")
         sim = Simulator(text, base, sim_dirs + [Path(p) for p in paths("paths/lib_paths")] +
-                        ([Path(user).expanduser()] if user else []))
+                        ([Path(user).expanduser()] if user else []), run_options())
         self.sim_owner = w
         self._sim_interactive = interactive
         self.sim_thread = SimThread(sim)
@@ -1779,10 +1780,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _apply_search_paths():
-        from ..model.library import set_extra_roots
+        """Settings the model layer reads: symbol search paths, subfolder search, pin shorts."""
+        from ..model import edit, library
         from .settings_dialog import get, paths
         user = get("paths/user_dir")
-        set_extra_roots(paths("paths/symbol_paths") + ([str(Path(user).expanduser())] if user else []))
+        library.set_extra_roots(paths("paths/symbol_paths") + ([str(Path(user).expanduser())] if user else []))
+        library.SEARCH_SUBDIRS = not get("paths/no_subdirs")
+        edit.ALLOW_PIN_SHORTS = get("drafting/allow_pin_shorts")
 
     def _all_widgets(self):
         return [s.widget() for s in self.mdi.subWindowList()] + list(getattr(self, "floating", []))

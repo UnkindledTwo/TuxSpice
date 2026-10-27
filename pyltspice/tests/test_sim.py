@@ -295,3 +295,60 @@ def test_op_keeps_its_first_vector(tmp_path):
     assert res.ok, res.errors
     vs = VectorSet(res.plots[0])
     assert "V(a0)" in vs.names() and 0.5 < float(np.real(vs.get("V(a0)"))[0]) < 0.9
+
+
+SUB = ("* opts\n.subckt blk a b\nR1 a m 1k\nQ1 b m 0 2N3904\n.ends\n"
+       "V1 in 0 1\nX1 in out blk\nR2 out vcc 1k\nV2 vcc 0 5\nL1 vcc l 1u\nR3 l 0 1k\n.op\n.end\n")
+
+
+@needs_ngspice
+def test_save_defaults_listing_and_rser_warning(tmp_path):
+    """Settings > Save Defaults filter what's saved (LTspice's defaults hide subcircuit
+    internals); Generate Expanded Listing puts the flat netlist in the log; inductors
+    without Rser are reported."""
+    from pyltspice.sim.runner import RunOptions
+    names = lambda res: VectorSet(res.plots[0]).names()
+    res = Simulator(SUB, tmp_path / "a").run()
+    assert res.ok, res.errors
+    assert "V(out)" in names(res) and "I(R2)" in names(res)
+    assert not any("x1" in n.lower() for n in names(res))                 # subcircuit internals hidden
+    assert "L1: no series resistance (Rser) specified" in res.warnings
+    res = Simulator(SUB, tmp_path / "b", options=RunOptions(
+        save_subckt_voltages=True, save_subckt_currents=True, expanded_listing=True, warn_no_rser=False,
+        ascii_raw=True)).run()
+    assert res.ok, res.errors
+    assert any("x1" in n.lower() and n.startswith("V(") for n in names(res))
+    assert any("x1" in n.lower() and n.startswith("I") for n in names(res))
+    assert "--- Expanded listing ---" in res.log and "x1.m" in res.log.lower()
+    assert not res.warnings and (tmp_path / "b.raw").read_bytes().find(b"Values:") > 0   # ASCII .raw
+    res = Simulator(SUB, tmp_path / "c", options=RunOptions(save_currents=False)).run()
+    assert res.ok and "I(R2)" not in names(res) and "I(V2)" in names(res)
+
+
+@needs_ngspice
+def test_default_devices_libraries_and_user_models(tmp_path):
+    from pyltspice.sim import ltcompat
+    from pyltspice.sim.runner import RunOptions
+    nl = "* q\nV1 c 0 5\nV2 b 0 0.7\nQ1 c b 0 MYQ\nD1 c 0 D\n.op\n.end\n"
+    res = Simulator(nl, tmp_path / "a").run()
+    assert not res.ok and any("MYQ" in e.upper() for e in res.errors)
+    (tmp_path / "user.bjt").write_text(".model MYQ NPN(BF=123 IS=1e-15)\n.model BC337 NPN(BF=7)\n")
+    res = Simulator(nl, tmp_path / "b", options=RunOptions(user_dir=tmp_path)).run()
+    assert res.ok, res.errors
+    assert ltcompat.user_model("bc337", tmp_path) == ".model BC337 NPN(BF=7)"      # user.* wins
+    res = Simulator(nl, tmp_path / "c", options=RunOptions(user_dir=tmp_path, default_devices=False)).run()
+    assert res.ok and "D: using SPICE's default model parameters" in res.warnings
+    res = Simulator(nl, tmp_path / "d", options=RunOptions(user_dir=tmp_path, default_libraries=False)).run()
+    assert not res.ok
+    res = Simulator(nl.replace("MYQ", "BC337"), tmp_path / "e", options=RunOptions(solver="Alternate")).run()
+    assert res.ok and ".options sparse" in (tmp_path / "e.ngspice.cir").read_text()
+
+
+def test_random_seed_repeats_unless_reseeding():
+    """LTspice gives the same random numbers every run unless Hacks > Use the clock to reseed;
+    every .step run still gets its own seed."""
+    from pyltspice.sim.runner import RunOptions, spiceinit
+    assert spiceinit(RunOptions()) == spiceinit(RunOptions())
+    assert spiceinit(RunOptions(), 0) != spiceinit(RunOptions(), 1)
+    assert "num_threads=4" in spiceinit(RunOptions(threads=4))
+    assert "rndseed=1\n" not in spiceinit(RunOptions(mc_reseed=True))

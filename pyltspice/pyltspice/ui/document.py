@@ -6,7 +6,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from ..model import asc
 from ..model.edit import cleanup_wires
-from ..model.library import default_library
+from ..model.library import default_library, schematic_dirs
 from .schematic_view import SchematicScene
 
 
@@ -59,7 +59,7 @@ class SchematicDocument(QObject):
 
     @property
     def local_dirs(self):
-        return [self.sch.path.parent] if self.sch.path else []
+        return schematic_dirs(self.sch.path)
 
     # -- editing protocol: begin() ... mutate self.sch ... commit(label)
     def begin(self):

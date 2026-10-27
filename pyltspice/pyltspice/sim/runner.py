@@ -3,6 +3,7 @@ import itertools
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +12,75 @@ from . import ltcompat, measure, spicenum
 from .rawfile import Plot, combine_steps, read_raw
 
 SPICEINIT = "set ngbehavior=ltpsa\nset filetype=binary\n"
+ANALYSIS_CARDS = (".tran", ".ac", ".dc", ".op", ".noise", ".tf", ".pz", ".disto", ".four", ".sens")
+
+
+@dataclass
+class RunOptions:
+    """Tools > Settings values that change how a run is set up. Defaults are LTspice's."""
+    default_devices: bool = True        # Netlist Options: add ".model D D" etc. silently
+    default_libraries: bool = True      # Netlist Options: standard.* and user.* model cards
+    user_dir: Path | None = None        # Search Paths: user files (user.dio, user.bjt...)
+    save_currents: bool = True          # Save Defaults
+    save_subckt_voltages: bool = False
+    save_subckt_currents: bool = False
+    no_terminal_currents: bool = False  # "Don't save Ib(), Ie(), Is(), Ig(), or Ix()"
+    ascii_raw: bool = False             # Compression: ASCII data files
+    threads: int = 0                    # SPICE: Max threads (0: ngspice's default)
+    solver: str = "Normal"              # SPICE: "Alternate" is ngspice's Sparse 1.3, not KLU
+    mc_reseed: bool = False             # Hacks: reseed random numbers from the clock
+    expanded_listing: bool = False      # Operation: flat netlist into the log
+    warn_no_rser: bool = True           # Operation
+
+
+def spiceinit(opts: RunOptions, run_index=0) -> str:
+    """.spiceinit for one ngspice run. LTspice gives the same random numbers every run unless
+    told to reseed from the clock; each .step run still gets its own seed."""
+    text = SPICEINIT
+    if opts.ascii_raw:
+        text = text.replace("filetype=binary", "filetype=ascii")
+    if opts.threads:
+        text += f"set num_threads={opts.threads}\n"
+    seed = (int(time.time()) % 100000 if opts.mc_reseed else 1) + run_index
+    return text + f"set rndseed={seed}\n"
+
+
+def keep_vector(name: str, opts: RunOptions) -> bool:
+    """Settings > Save Defaults, applied to ngspice's vector names after the run."""
+    n = name.lower()
+    if n.startswith("v(") and "." in n:                      # v(x1.n1): inside a subcircuit
+        return opts.save_subckt_voltages
+    if n.startswith("i("):
+        dev = n[2:].split("[")[0]
+        if "." in dev and not dev.startswith("v__isense"):   # i(@r.x1.r1[i]), i(v.x1.v1)
+            return opts.save_subckt_currents and opts.save_currents
+        if n.startswith("i(@") and not opts.save_currents:
+            return False
+        if opts.no_terminal_currents and re.search(r"\[(ib|ie|is|ig)\]", n):
+            return False
+    return True
+
+
+def filter_vectors(plot: Plot, opts: RunOptions) -> Plot:
+    keep = [i for i, v in enumerate(plot.variables) if i == 0 or keep_vector(v.name, opts)]
+    if len(keep) == len(plot.variables) or plot.data is None:
+        return plot
+    plot.variables = [type(v)(k, v.name, v.kind) for k, v in enumerate(plot.variables[i] for i in keep)]
+    plot.data = plot.data[keep]
+    return plot
+
+
+def inductors_without_rser(text: str):
+    """Names of inductors with no Rser= (Operation > Warn if no Rser is specified)."""
+    out, depth = [], 0
+    for line in ltcompat.join_continuations(text)[1:]:
+        tok = line.split()
+        head = tok[0].lower() if tok else ""
+        depth += (head == ".subckt") - (head == ".ends")
+        # top level only: the inductors the user drew, not library internals
+        if depth == 0 and head[:1] == "l" and not any(t.lower().startswith("rser") for t in tok[3:]):
+            out.append(tok[0])
+    return out
 
 
 @dataclass
@@ -168,10 +238,11 @@ def _error_lines(log: str):
 class Simulator:
     """Translate a netlist and run ngspice; call run() from a worker thread."""
 
-    def __init__(self, netlist_text: str, out_base: Path, search_dirs=()):
+    def __init__(self, netlist_text: str, out_base: Path, search_dirs=(), options: RunOptions | None = None):
         self.netlist_text = netlist_text
         self.out_base = Path(out_base)          # e.g. /dir/circuit -> circuit.raw, circuit.log
         self.search_dirs = list(search_dirs)
+        self.options = options or RunOptions()
         self.proc = None
         self.cancelled = False
 
@@ -205,11 +276,36 @@ class Simulator:
         if timed_out:
             return [], text + f"\nError: gave up after {timeout:.0f} s\n", raw
         plots = read_raw(raw) if raw.exists() and raw.stat().st_size else []
-        return plots, text, raw
+        return [filter_vectors(p, self.options) for p in plots], text, raw
+
+    def _listing(self, deck: str, workdir: Path) -> str:
+        """Operation > Generate Expanded Listing: ngspice's flat netlist (subcircuits expanded)."""
+        lines = [l for l in deck.splitlines() if not l.strip().lower().startswith(ANALYSIS_CARDS)
+                 and l.strip().lower() != ".end"]
+        (workdir / ".spiceinit").write_text(spiceinit(self.options))
+        cir = workdir / "listing.cir"
+        cir.write_text("\n".join(lines + [".control", "listing expand", "quit", ".endc", ".end"]) + "\n",
+                       encoding="latin-1", errors="replace")
+        try:
+            r = subprocess.run([config.ngspice_path(), "-b", str(cir)], cwd=workdir, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=30, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        out = r.stdout.decode(errors="replace")
+        start = out.find("Circuit:")
+        return "--- Expanded listing ---\n" + (out[start:] if start >= 0 else out).strip() + "\n\n"
 
     def run(self) -> SimResult:
         res = SimResult()
-        tr = ltcompat.translate(self.netlist_text, self.search_dirs)
+        o = self.options
+        tr = ltcompat.translate(self.netlist_text, self.search_dirs, default_devices=o.default_devices,
+                                default_libraries=o.default_libraries, save_currents=o.save_currents,
+                                user_dir=o.user_dir)
+        if o.solver == "Alternate":
+            tr.text = _with_options(tr.text, ".options sparse")
+        if o.warn_no_rser:
+            res.warnings += [f"{n}: no series resistance (Rser) specified" for n in
+                             inductors_without_rser(self.netlist_text)]
         res.warnings += tr.warnings
         res.errors += tr.errors
         if tr.errors:
@@ -220,7 +316,7 @@ class Simulator:
             tr.text, encoding="latin-1", errors="replace")
         with tempfile.TemporaryDirectory(prefix="pyltspice-") as tmp:
             work = Path(tmp)
-            (work / ".spiceinit").write_text(SPICEINIT)
+            listing = self._listing(tr.text, work) if o.expanded_listing else ""
             steps = tr.steps + ([tr.dc_sweep] if tr.dc_sweep else [])
             combos = list(itertools.product(*[s.values for s in steps])) if steps else [()]
             runs, logs, labels = [], [], []
@@ -229,6 +325,7 @@ class Simulator:
                 text = base_text
                 for spec, val in zip(steps, combo):
                     text = _apply_step(text, spec, val)
+                (work / ".spiceinit").write_text(spiceinit(o, n))
                 plots, log, raw = self._run_once(text, work, str(n))
                 for opt in CONVERGENCE_RETRIES:
                     if not any(k in log.lower() for k in _NONCONVERGENCE):
@@ -252,7 +349,7 @@ class Simulator:
                 if not plots:
                     res.errors += errs or ["ngspice produced no output"]
                     break
-            res.log = "\n".join(logs)
+            res.log = listing + "\n".join(logs)
             if runs and all(runs) and len(runs) == len(combos) and tr.dc_sweep:
                 res.plots = [_dc_sweep_plot(runs, combos, tr)]
                 res.ok = True

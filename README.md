@@ -22,12 +22,16 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   window, schematic, waveform), item for item with LTspice's icons and keys, and the right-click
   menus of schematics and plots match too. Keys mean what they mean in LTspice for the active
   window (C places a capacitor on a schematic, a cursor on a plot).
-- **Settings** (Tools > Settings): LTspice's ten tabs. Drafting options, schematic font and pen
-  thickness, waveform font and trace width, toolbar icon size, background image, save-on-run,
-  .raw/.log directory, automatic .raw deletion, SPICE tolerances and integration method (passed
-  to ngspice as `.options`), netlist µ→u and order, and symbol/library search paths all work.
-  As in LTspice, only settings marked [*] are remembered. Options that have no ngspice
-  equivalent (solver, threads, compression, hacks) are shown greyed out with a tooltip.
+- **Settings** (Tools > Settings): LTspice's ten tabs. Drafting options (including pin shorts,
+  ortho stretch and cutting angled wires), schematic font and pen thickness, waveform font and
+  trace width, toolbar icon size, background image, save-on-run, expanded listing, Rser warnings,
+  .raw/.log directory, automatic .raw deletion, SPICE tolerances, integration method, solver and
+  threads (passed to ngspice), what gets saved (device and subcircuit currents and voltages),
+  default devices and libraries (with your own user.dio/.bjt/.mos/.jft), ASCII .raw files,
+  repeatable or clock-seeded random numbers, netlist µ→u and order, and symbol/library search
+  paths (including schematic subfolders) all work. As in LTspice, only settings marked [*] are
+  remembered. The few options with no ngspice equivalent (matrix compiler, thread priority,
+  .raw compression, most hacks, the Internet tab) stay greyed out with a tooltip.
 - **Editing**: LTspice-style editing modes (place, wire, label, move, stretch, duplicate, rotate,
   mirror, delete, zoom area, search), undo/redo, LTspice's own placement and wiring behavior
   (parts carried by their middle, labels kept upright on rotation, click an open pin to start a

@@ -27,8 +27,10 @@ def simulate_file(path: Path, text: str):
             pass
     else:
         netlist = text
+    options = None
     try:                       # Settings > SPICE and Search Paths, when the user changed them
-        from ..ui.settings_dialog import get, paths, spice_options
+        from ..ui.settings_dialog import get, paths, run_options, spice_options
+        options = run_options()
         opts = spice_options()
         if opts:
             netlist = _with_options(netlist, opts)
@@ -37,7 +39,7 @@ def simulate_file(path: Path, text: str):
             dirs.append(Path(get("paths/user_dir")).expanduser())
     except Exception:  # noqa: BLE001 - settings are optional here
         pass
-    res = Simulator(netlist, path.with_suffix(""), dirs).run()
+    res = Simulator(netlist, path.with_suffix(""), dirs, options).run()
     return res, sim_log(res)
 
 

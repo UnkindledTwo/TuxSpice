@@ -88,6 +88,40 @@ def _ci_exists(path: Path) -> Path | None:
 
 
 _default = None
+# Settings > Search Paths > "Don't place symbols from schematic subdirectories" (off: search them)
+SEARCH_SUBDIRS = True
+
+
+def schematic_dirs(sch_path) -> list:
+    """Folders searched for a schematic's own symbols and libraries: its folder and, as in
+    LTspice, its subfolders (two levels deep, hidden ones skipped, at most 64)."""
+    if not sch_path:
+        return []
+    folder = Path(sch_path).parent
+    if not SEARCH_SUBDIRS:
+        return [folder]
+    try:
+        stamp = folder.stat().st_mtime
+    except OSError:
+        return [folder]
+    return [folder] + list(_subdirs(str(folder), stamp))
+
+
+@lru_cache(maxsize=64)
+def _subdirs(folder: str, _stamp) -> tuple:
+    out, level = [], [Path(folder)]
+    for _ in range(2):
+        nxt = []
+        for d in level:
+            try:
+                nxt += sorted(c for c in d.iterdir() if c.is_dir() and not c.name.startswith("."))
+            except OSError:
+                continue
+        out += nxt
+        level = nxt
+        if len(out) >= 64:
+            break
+    return tuple(out[:64])
 
 
 def default_library() -> SymbolLibrary:

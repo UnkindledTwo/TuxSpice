@@ -156,6 +156,32 @@ def model_catalog():
     return out
 
 
+USER_FILES = ("user.dio", "user.bjt", "user.mos", "user.jft")
+
+
+def user_model(name: str, user_dir) -> str | None:
+    """A .model card from the user's own user.dio/.bjt/.mos/.jft (Settings > Search Paths >
+    User files); these take precedence over the standard libraries."""
+    if not user_dir:
+        return None
+    cards = _user_cards(str(user_dir), tuple(
+        (f, (Path(user_dir) / f).stat().st_mtime if (Path(user_dir) / f).exists() else 0) for f in USER_FILES))
+    return cards.get(name.lower())
+
+
+@lru_cache(maxsize=4)
+def _user_cards(user_dir: str, stamps):
+    cards = {}
+    for fname, stamp in stamps:
+        if not stamp:
+            continue
+        for line in join_continuations(decode((Path(user_dir) / fname).read_bytes())[0]):
+            m = re.match(r"\s*\.model\s+(\S+)\s+(.*)", line, re.I)
+            if m:
+                cards.setdefault(m.group(1).lower(), line.strip())
+    return cards
+
+
 def standard_model(name: str) -> str | None:
     """The .model card for `name` from lib/cmp/standard.*, with continuations joined."""
     return _standard_cards().get(name.lower())
@@ -1150,7 +1176,12 @@ def _parse_step(tokens) -> StepSpec | None:
     return StepSpec(name, vals, is_param)
 
 
-def translate(text: str, search_dirs=()) -> Translation:
+def translate(text: str, search_dirs=(), default_devices=True, default_libraries=True,
+              save_currents=True, user_dir=None) -> Translation:
+    """default_devices / default_libraries: Settings > Netlist Options (LTspice: with Default
+    Devices off a generic D/NPN/... still gets SPICE's default model, plus a warning; with
+    Default Libraries off, standard.* and user.* cards aren't added). save_currents: Settings >
+    Save Defaults > Save Device Currents."""
     tr = Translation("")
     lines = convert_machines(join_continuations(text.replace("µ", "u").replace("μ", "u")))
     out = []
@@ -1298,9 +1329,13 @@ def translate(text: str, search_dirs=()) -> Translation:
     for name, letter in used_models.items():
         if name in defined_models:
             continue
-        card = standard_model(name)
+        card = None
+        if default_libraries:
+            card = user_model(name, user_dir) or standard_model(name)
         if card is None and name in BUILTIN_MODELS:
             card = BUILTIN_MODELS[name]
+            if not default_devices:
+                tr.warnings.append(f"{name.upper()}: using SPICE's default model parameters")
         if card is None:
             tr.errors.append(f"Could not find model \"{name}\"")
             continue
@@ -1345,7 +1380,8 @@ def translate(text: str, search_dirs=()) -> Translation:
     lt_temp = temps[0] if temps and temps[0] is not None else 27
     smallsig = 1 if tr.analysis in ("ac", "noise") else 0
     body = [title, ".param pi=3.141592653589793", f".param lt_temp={lt_temp:g}",
-            f".param lt_smallsig={smallsig}"] + func_defs + out + model_cards + [".options savecurrents", ".end"]
+            f".param lt_smallsig={smallsig}"] + func_defs + out + model_cards + \
+        ([".options savecurrents"] if save_currents else []) + [".end"]
     tr.text = "\n".join(body) + "\n"
     return tr
 

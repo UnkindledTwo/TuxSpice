@@ -6,14 +6,14 @@ order as the LTspice symbols. The footprint is the part's Footprint attribute if
 otherwise the symbol name.
 """
 from .asc import Schematic
-from .library import SymbolLibrary, default_library
+from .library import SymbolLibrary, default_library, schematic_dirs
 from .netlist import connectivity, symbol_pins
 
 FORMATS = {"Tango": ".net", "PADS": ".asc", "Allegro (Telesis)": ".net", "Wire List": ".txt"}
 
 
 def _parts_and_nets(sch: Schematic, lib: SymbolLibrary):
-    local = [sch.path.parent] if sch.path else []
+    local = schematic_dirs(sch.path)
     conn = connectivity(sch, lib)
     parts, nets = [], {}
     for inst in sch.symbols:

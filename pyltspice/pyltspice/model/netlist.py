@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .asc import Schematic, Wire
 from .geometry import apply, orient_matrix
-from .library import SymbolLibrary, default_library
+from .library import SymbolLibrary, default_library, schematic_dirs
 
 MODEL_FILE_RE = re.compile(r"\.(lib|sub|mod|cir|txt|bjt|dio|mos|jft|inc|ckt|sp|spi|model)$", re.I)
 
@@ -104,7 +104,7 @@ def _effective_wires(sch: Schematic, lib, local):
 
 def connectivity(sch: Schematic, lib: SymbolLibrary | None = None) -> Connectivity:
     lib = lib or default_library()
-    local = [sch.path.parent] if sch.path else []
+    local = schematic_dirs(sch.path)
     uf = _UF()
     wires = _effective_wires(sch, lib, local)
     conn = Connectivity()
@@ -365,7 +365,7 @@ def _subckt(path: Path, sym, lib, includes, errors, subckts, stack):
 
 def generate_netlist(sch: Schematic, lib: SymbolLibrary | None = None) -> Netlist:
     lib = lib or default_library()
-    local = [sch.path.parent] if sch.path else []
+    local = schematic_dirs(sch.path)
     conn = connectivity(sch, lib)
     lines = [f"* {sch.path}" if sch.path else "* untitled"]
     includes, errors, subckts = [], [], {}
@@ -395,7 +395,7 @@ def subckt_netlist(sch: Schematic, lib: SymbolLibrary | None = None, name="sheet
     """Hierarchy > Generate Subckt Netlist: this sheet as '.subckt name <I/O ports>'.
     Analysis commands are left out; other directives stay inside the subcircuit."""
     lib = lib or default_library()
-    local = [sch.path.parent] if sch.path else []
+    local = schematic_dirs(sch.path)
     conn = connectivity(sch, lib)
     ports, seen = [], set()
     for f in sch.flags:

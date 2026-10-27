@@ -589,6 +589,7 @@ class MoveTool(_BoxSelectTool):
         self.anchor = None
         self.stretch = []           # (wire, end index 0/1) endpoints dragged along
         self.fixed_wire_items = []
+        self._ctrl = False          # Ctrl flips Ortho stretch mode while dragging (LTspice)
 
     @property
     def status(self):
@@ -608,6 +609,8 @@ class MoveTool(_BoxSelectTool):
         self.anchor = self.view.snap(self.mouse)
         self.win.mode_changed.emit()
         self.stretch = []
+        if self.mode == "drag" and self._cut_angled(objs, box):
+            return
         if self.mode == "drag":
             self.stretch = self._find_stretch(objs, box)
             # wires with only one end inside the box are stretched, not moved
@@ -620,6 +623,51 @@ class MoveTool(_BoxSelectTool):
                             if box.contains(QPointF(*pt)) and (w, i) not in self.stretch:
                                 self.stretch.append((w, i))
         self._make_carry_items()
+
+    def _cut_angled(self, objs, box):
+        """Settings > Cut angled wires during stretch: clicking along a non-orthogonal wire
+        breaks it in two there, and the new corner follows the mouse."""
+        from .settings_dialog import get
+        w = objs[0] if box is None and len(objs) == 1 else None
+        if not isinstance(w, asc.Wire) or w.x1 == w.x2 or w.y1 == w.y2 or not get("drafting/cut_angled"):
+            return False
+        p = self.view.snap(self.mouse)
+        px, py = int(p.x()), int(p.y())
+        if (px, py) in ((w.x1, w.y1), (w.x2, w.y2)):
+            return False
+        w2 = asc.Wire(px, py, w.x2, w.y2)
+        w.x2, w.y2 = px, py
+        self.doc.sch.items.append(w2)
+        self.carry = []
+        self.stretch = [(w, 1), (w2, 0)]
+        self._make_carry_items()
+        return True
+
+    def _ortho(self):
+        from .settings_dialog import get
+        return get("drafting/ortho_stretch") != self._ctrl
+
+    def _stretched(self, d):
+        """[(wire, points)] for the stretched wires moved by d. In Ortho stretch mode a
+        horizontal or vertical wire stays that way and gets an elbow to its moved end."""
+        ends = {}
+        for w, i in self.stretch:
+            ends.setdefault(id(w), (w, set()))[1].add(i)
+        ortho = self._ortho()
+        out = []
+        for w, which in ends.values():
+            a, b = [QPointF(*pt) for pt in ed.points_of(w)]
+            if len(which) == 2:
+                out.append((w, [a + d, b + d]))
+                continue
+            i = next(iter(which))
+            fixed, moved = (a, b + d) if i == 1 else (b, a + d)
+            horiz, vert = a.y() == b.y(), a.x() == b.x()
+            pts = [fixed, moved]
+            if ortho and horiz != vert and moved.x() != fixed.x() and moved.y() != fixed.y():
+                pts = [fixed, QPointF(moved.x(), fixed.y()) if horiz else QPointF(fixed.x(), moved.y()), moved]
+            out.append((w, pts if i == 1 else pts[::-1]))
+        return out
 
     def _find_stretch(self, objs, box):
         pts = set()
@@ -663,6 +711,7 @@ class MoveTool(_BoxSelectTool):
             it.setPos(d)
 
     def move(self, view, ev):
+        self._ctrl = bool(ev.modifiers() & Qt.ControlModifier)
         if self.carry is not None:
             self.mouse = self.scene_pos(ev)
             self._follow()
@@ -681,10 +730,12 @@ class MoveTool(_BoxSelectTool):
             dx, dy = int(d.x()), int(d.y())
             for o in self.carry:
                 ed.translate(o, dx, dy)
-            for w, i in self.stretch:
-                pts = ed.points_of(w)
-                pts[i] = (pts[i][0] + dx, pts[i][1] + dy)
-                ed.set_points(w, pts)
+            self._ctrl = bool(ev.modifiers() & Qt.ControlModifier)
+            for w, pts in self._stretched(QPointF(dx, dy)):
+                pts = [(int(q.x()), int(q.y())) for q in pts]
+                ed.set_points(w, pts[:2])
+                if len(pts) == 3:                   # ortho elbow: a second wire
+                    self.doc.sch.items.append(asc.Wire(*pts[1], *pts[2]))
             if self.mode == "duplicate":
                 self.doc.sch.items += self.carry
             self.carry = None
@@ -758,10 +809,9 @@ class MoveTool(_BoxSelectTool):
         pen = QPen(theme().color("wire"))
         pen.setCosmetic(True)
         p.setPen(pen)
-        for w, i in self.stretch:
-            pts = [QPointF(*pt) for pt in ed.points_of(w)]
-            pts[i] = pts[i] + d
-            p.drawLine(QLineF(pts[0], pts[1]))
+        for _, pts in self._stretched(d):
+            for a, b in zip(pts, pts[1:]):
+                p.drawLine(QLineF(a, b))
 
     def deactivate(self):
         if self.carry is not None:

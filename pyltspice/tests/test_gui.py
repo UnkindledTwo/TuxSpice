@@ -1,3 +1,4 @@
+import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
@@ -734,3 +735,77 @@ def test_pick_new_device_lists_both_libraries(qapp):
     assert inst.attrs["Value"] == "2N5551"
     for d in (npn, zen, pm, ed):
         _dispose(d)
+
+
+@needs_lib
+def test_ortho_stretch_and_cut_angled_wires(qapp):
+    """Settings > Schematic: Ortho stretch keeps a stretched horizontal wire horizontal with an
+    elbow (Ctrl flips it); Cut angled wires splits an angled wire where Stretch clicks it."""
+    from pyltspice.ui.main_window import MainWindow
+    from pyltspice.ui.settings_dialog import put
+    win = MainWindow()
+    win.resize(1000, 800)
+    win.show()
+    win.new_schematic()
+    sw = win.schematic()
+    view = sw.view
+    view.resetTransform()
+    view.centerOn(0, 0)
+    sch = sw.doc.sch
+    sch.items += [asc.Wire(-160, 0, 0, 0), asc.Wire(96, 96, 224, 224)]
+    sw.doc.commit("setup")
+    qapp.processEvents()
+    try:
+        put("drafting/ortho_stretch", True)
+        sw.start_move("drag")
+        for fn, (x, y) in ((QTest.mouseMove, (32, 32)), (QTest.mousePress, (32, 32)),
+                           (QTest.mouseMove, (-16, -16)), (QTest.mouseRelease, (-16, -16))):
+            args = (view.viewport(),) if fn is QTest.mouseMove else (view.viewport(), Qt.LeftButton, Qt.NoModifier)
+            fn(*args, view.mapFromScene(x, y))
+        _click(view, -48, -80)                 # the box held the right end: 32 left, 64 up...
+        segs = sorted((w.x1, w.y1, w.x2, w.y2) for w in sch.wires if w.y1 <= 0 and w.y2 <= 0)
+        assert segs == [(-160, 0, -32, 0), (-32, 0, -32, -64)]      # ...through an elbow
+        _click(view, 0, 0, Qt.RightButton)
+
+        put("drafting/cut_angled", True)
+        sw.start_move("drag")
+        _click(view, 160, 160)                 # middle of the angled wire
+        _click(view, 160, 64)
+        angled = sorted((w.x1, w.y1, w.x2, w.y2) for w in sch.wires if w.y1 > 0 or w.y2 > 0)
+        assert angled == [(96, 96, 160, 64), (160, 64, 224, 224)]
+        _click(view, 0, 0, Qt.RightButton)
+    finally:
+        put("drafting/ortho_stretch", False)
+        put("drafting/cut_angled", True)
+    sw.doc.undo.setClean()
+    win.close()
+
+
+def test_pin_shorts_and_subfolder_symbols(tmp_path):
+    from pyltspice.model import edit, library
+    from pyltspice.model.netlist import connectivity
+    # a wire straight across a resistor's pins: cut (the default) or kept as a short
+    lib = library.default_library()
+    if lib.get("res") is None:
+        pytest.skip("needs the LTspice library")
+    sch = asc.parse_asc("Version 4\nSHEET 1 880 680\nWIRE 16 0 16 128\nSYMBOL res 0 0 R0\nSYMATTR InstName R1\n")
+    edit.cleanup_wires(sch, lib)
+    assert [(w.y1, w.y2) for w in sch.wires] == [(0, 16), (96, 128)]
+    try:
+        edit.ALLOW_PIN_SHORTS = True
+        sch = asc.parse_asc("Version 4\nSHEET 1 880 680\nWIRE 16 0 16 128\nSYMBOL res 0 0 R0\nSYMATTR InstName R1\n")
+        edit.cleanup_wires(sch, lib)
+        assert (16, 96) in [(w.y1, w.y2) for w in sch.wires]
+        assert len({connectivity(sch, lib).net_at(16, 16), connectivity(sch, lib).net_at(16, 96)}) == 1
+    finally:
+        edit.ALLOW_PIN_SHORTS = False
+    # LTspice also finds symbols in the schematic's subfolders, unless told not to
+    (tmp_path / "parts" / "deep").mkdir(parents=True)
+    (tmp_path / ".hidden").mkdir()
+    sch_path = tmp_path / "top.asc"
+    assert library.schematic_dirs(sch_path) == [tmp_path, tmp_path / "parts", tmp_path / "parts" / "deep"]
+    try:
+        library.SEARCH_SUBDIRS = False
+        assert library.schematic_dirs(sch_path) == [tmp_path]
+    finally:
+        library.SEARCH_SUBDIRS = True

@@ -193,6 +193,12 @@ Open:
   lists both libraries. Next: darlingtons (TIP120/122 need a subckt symbol), comparators
   (LM393/LM339), 555 timer, LM317/78xx regulators.
 
+- Done: the greyed Settings now work (see the Settings rows in `ui_spec.md`): run options
+  travel as `runner.RunOptions` (built by `settings_dialog.run_options()`, used by the GUI and
+  the MCP headless runner); pin shorts, subfolder search, ortho stretch and cut angled wires are
+  editing behaviour. Note: Save Defaults now hides subcircuit internals by default, as LTspice
+  does; re-run `scripts/mcp_diff.py` against LTspice before relying on MCP vector lists.
+
 ### 4. Packaging
 - Done: `.desktop` file, icon and MIME types for `.asc`/`.raw` (`scripts/install_desktop.py`).
 - Done: first-run setup (`ui/setup_dialog.py`, `setup_lib.py`): finds `LTspice*.msi` in Downloads,
