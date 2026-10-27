@@ -105,28 +105,66 @@ def toolbar_css(palette: QPalette | None = None) -> str:
             f"QToolButton:pressed, QToolButton:checked {{ background: {rgba(pressed)}; }}")
 
 
-def adapt_icon(pm: QPixmap, background: QColor, target=4.8) -> QPixmap:
-    """Blend each too-dark pixel of an icon toward white until it has `target` contrast with the
-    background (hue is kept, so blue stays blue, just lighter). Only for dark backgrounds."""
+def _hsl(rgb):
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    l = (mx + mn) / 2
+    d = mx - mn
+    s = np.where(d == 0, 0, d / np.maximum(1e-9, 1 - np.abs(2 * l - 1)))
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    dd = np.maximum(d, 1e-9)
+    h = np.where(mx == r, ((g - b) / dd) % 6, np.where(mx == g, (b - r) / dd + 2, (r - g) / dd + 4)) / 6
+    return np.where(d == 0, 0, h), np.clip(s, 0, 1), l
+
+
+def _rgb(h, s, l):
+    c = (1 - np.abs(2 * l - 1)) * s
+    hp = h * 6
+    x = c * (1 - np.abs(hp % 2 - 1))
+    z = np.zeros_like(h)
+    k = np.floor(hp).astype(int) % 6
+    r = np.choose(k, [c, x, z, z, x, c])
+    g = np.choose(k, [x, c, c, x, z, z])
+    b = np.choose(k, [z, z, x, c, c, x])
+    m = l - c / 2
+    return np.stack([r + m, g + m, b + m], -1)
+
+
+def _lum(rgb):
+    lin = np.where(rgb <= 0.03928, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    return lin @ np.array([0.2126, 0.7152, 0.0722])
+
+
+def adapt_icon(pm: QPixmap, background: QColor, target=4.5) -> QPixmap:
+    """Restyle an icon drawn for a light toolbar for a dark one, as dark icon themes do:
+    greys are inverted (black outlines turn near-white, white fills a dark grey just above the
+    toolbar), and colours keep their full saturation, only lighter until they reach `target`
+    contrast with the background; blues move to an azure accent so they stay vivid instead of
+    lavender. Light backgrounds are left alone."""
     if luminance(background) >= 0.2:
         return pm
     img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
     w, h = img.width(), img.height()
     a = np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine())[:, :w * 4].reshape(h, w, 4).copy()
     rgb = a[..., 2::-1].astype(float) / 255             # BGRA -> RGB
+    hue, sat, light = _hsl(rgb)
+    # LTspice's pure/navy blue turns lavender when lightened; dark themes use an azure accent
+    hue = np.where((hue > 0.58) & (hue < 0.72), 0.59, hue)
+    grey = sat < 0.2
+    # greys: invert lightness into [0.25, 0.93] (white fill -> #404040, black -> #ededed)
+    new_l = np.where(grey, 0.93 - light * 0.68, light)
     y_bg = luminance(background)
-    out = rgb.copy()
-    todo = a[..., 3] > 0
-    for t in np.linspace(0, 0.95, 20):
-        c = rgb + (1 - rgb) * t
-        cl = np.where(c <= 0.03928, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-        y = cl @ np.array([0.2126, 0.7152, 0.0722])
-        ok = todo & ((y + 0.05) / (y_bg + 0.05) >= target)
-        out[ok] = c[ok]
-        todo &= ~ok
+    out = _rgb(hue, np.where(grey, 0, sat), new_l)
+    # colours: raise lightness (saturation kept) until they read, but not into pastel
+    todo = ~grey & (a[..., 3] > 0)
+    for l in np.arange(0.0, 0.76, 0.02):
         if not todo.any():
             break
-    out[todo] = 1.0 - (1.0 - rgb[todo]) * 0.05          # couldn't reach it: nearly white
+        cand = _rgb(hue, sat, np.maximum(light, l))
+        ok = todo & ((_lum(cand) + 0.05) / (y_bg + 0.05) >= target)
+        out[ok] = cand[ok]
+        todo &= ~ok
+    if todo.any():
+        out[todo] = _rgb(hue, sat, np.maximum(light, 0.75))[todo]
     a[..., 2::-1] = np.clip(out * 255 + 0.5, 0, 255).astype(np.uint8)
     res = QImage(a.data, w, h, w * 4, QImage.Format_ARGB32).copy()
     res.setDevicePixelRatio(pm.devicePixelRatio())

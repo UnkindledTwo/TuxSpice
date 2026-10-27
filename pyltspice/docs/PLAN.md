@@ -201,9 +201,10 @@ Open:
   editing behaviour. Note: Save Defaults now hides subcircuit internals by default, as LTspice
   does; re-run `scripts/mcp_diff.py` against LTspice before relying on MCP vector lists.
 
-- Done: dark and GTK themes (`ui/appearance.py`): icons are drawn for a light toolbar and lightened
-  per pixel to 4.8:1 contrast on dark palettes (redrawn when the palette flips, hidden windows
-  on show); toolbar tints from the palette; dark palette when the desktop prefers dark but Qt
+- Done: dark and GTK themes (`ui/appearance.py`): icons are drawn for a light toolbar and restyled
+  on dark palettes like dark icon themes do: greys inverted (white strokes, dark fills), colours
+  kept saturated and only lightened to 4.5:1, blues moved to an azure accent (plain lightening
+  looked washed out). Redrawn when the palette flips, hidden windows on show; toolbar tints from the palette; dark palette when the desktop prefers dark but Qt
   didn't apply it; Settings > Operation > Application theme. Checked with the real Mint-L-Dark
   GTK theme (`QT_QPA_PLATFORMTHEME=gtk3`). Margin labels restack on resize/zoom.
 

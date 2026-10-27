@@ -24,8 +24,8 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   window (C places a capacitor on a schematic, a cursor on a plot).
 - **Light and dark desktops**: the window follows the desktop's palette, GTK themes included
   (e.g. Adwaita-dark, Mint-L-Dark), and switches to dark itself when the desktop prefers dark
-  but Qt didn't apply it. Toolbar icons are lightened wherever they'd lack contrast on a dark
-  toolbar. Settings > Operation > Application theme forces System, Light or Dark (a TuxSpice
+  but Qt didn't apply it. On a dark toolbar the icons are restyled the way dark icon themes
+  do: white strokes, dark fills, and vivid colours with an azure blue. Settings > Operation > Application theme forces System, Light or Dark (a TuxSpice
   extra). Schematic and plot colours stay LTspice's, set in Tools > Color Preferences.
 - **Settings** (Tools > Settings): LTspice's ten tabs. Drafting options (including pin shorts,
   ortho stretch and cutting angled wires), schematic font and pen thickness, waveform font and

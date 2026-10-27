@@ -816,21 +816,28 @@ def test_pin_shorts_and_subfolder_symbols(tmp_path):
         library.SEARCH_SUBDIRS = True
 
 
-def _icon_contrast_failures(ic, bg):
-    """Fraction of an icon's solid pixels with less than 3:1 contrast against bg."""
+def _rgba(img):
     import numpy as np
     from PySide6.QtGui import QImage
-    from pyltspice.ui.appearance import luminance
-    pm = ic if hasattr(ic, "toImage") else ic.pixmap(32, 32)
-    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    img = (img if hasattr(img, "constBits") else img.toImage()).convertToFormat(QImage.Format_ARGB32)
     w, h = img.width(), img.height()
-    a = np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine())[:, :w * 4].reshape(h, w, 4)
-    solid = a[..., 3] > 200
-    rgb = a[..., 2::-1].astype(float) / 255
-    lin = np.where(rgb <= 0.03928, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
-    y = lin @ np.array([0.2126, 0.7152, 0.0722])
-    ratio = (np.maximum(y, luminance(bg)) + 0.05) / (np.minimum(y, luminance(bg)) + 0.05)
-    return float(((ratio < 3) & solid).sum()) / max(1, solid.sum())
+    a = np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine())[:, :w * 4].reshape(h, w, 4).copy()
+    return a[..., 2::-1].astype(float) / 255, a[..., 3]         # copied: img's buffer dies with it
+
+
+def _ink_failures(dark, light, bg):
+    """Fraction of an icon's ink (pixels that are dark or coloured in its light-toolbar version:
+    outlines, glyphs, accents) with less than 3:1 contrast against bg on the dark toolbar.
+    White fills are left out: on a dark toolbar they are meant to sink in."""
+    import numpy as np
+    from pyltspice.ui.appearance import luminance
+    lin = lambda c: np.where(c <= 0.03928, c / 12.92, ((c + 0.055) / 1.055) ** 2.4) @ [0.2126, 0.7152, 0.0722]
+    (rgb_l, alpha), (rgb_d, _) = _rgba(light), _rgba(dark)
+    sat = rgb_l.max(-1) - rgb_l.min(-1)
+    ink = (alpha > 200) & ((lin(rgb_l) < 0.2) | (sat > 0.3))
+    y, yb = lin(rgb_d), luminance(bg)
+    ratio = (np.maximum(y, yb) + 0.05) / (np.minimum(y, yb) + 0.05)
+    return float((ink & (ratio < 3)).sum()) / max(1, ink.sum())
 
 
 def test_dark_theme_icons_readable_and_restorable(qapp):
@@ -844,7 +851,7 @@ def test_dark_theme_icons_readable_and_restorable(qapp):
     pm = icons.icon("resistor").pixmap(32, 32)
     dark_bg = QColor("#2b2b2b")
     assert appearance.adapt_icon(pm, QColor("#efefef")).toImage() == pm.toImage()
-    assert _icon_contrast_failures(appearance.adapt_icon(pm, dark_bg), dark_bg) < 0.02
+    assert _ink_failures(appearance.adapt_icon(pm, dark_bg), pm, dark_bg) < 0.02
     win = MainWindow()
     win.show()
     light_bg = qapp.palette().color(QPalette.Window)
@@ -855,7 +862,8 @@ def test_dark_theme_icons_readable_and_restorable(qapp):
         qapp.processEvents()
         assert appearance.is_dark()
         bg = qapp.palette().color(QPalette.Window)
-        bad = {k: f for k, a in shown.items() if a.isEnabled() and (f := _icon_contrast_failures(a.icon(), bg)) > 0.05}
+        bad = {k: f for k, a in shown.items()
+               if a.isEnabled() and (f := _ink_failures(a.icon().pixmap(32, 32), before[k], bg)) > 0.05}
         assert not bad, bad
         assert "rgba(" in win.toolbar.styleSheet()
     finally:
