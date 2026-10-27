@@ -109,6 +109,14 @@ SPEC = {
     "hacks/gmin_isources": (False, False),
     "hacks/ind_damping": (True, True),
     "hacks/mc_clock": (False, True),
+    # TuxSpice (extras LTspice doesn't have; their own tab after LTspice's ten)
+    "tux/check_before_run": (True, True),
+    "tux/notify": (True, True),
+    "tux/notify_after": (10, True),
+    "tux/autosave_minutes": (2, True),
+    "tux/meas_panel": (False, True),
+    "tux/step_legend": (True, True),
+    "tux/color_steps": (False, True),
 }
 DEFAULTS = {k: v[0] for k, v in SPEC.items()}
 
@@ -229,7 +237,7 @@ class _Check(QCheckBox):
 
 class SettingsDialog(QDialog):
     TABS = ["Operation", "Schematic", "Waveforms", "SPICE", "Save Defaults", "Netlist Options",
-            "Compression", "Search Paths", "Internet", "Hacks"]
+            "Compression", "Search Paths", "Internet", "Hacks", "TuxSpice"]
     HELP = {"Operation": "operation.htm", "Schematic": "draftingoptions.htm", "Waveforms": "waveforms.htm",
             "SPICE": "spice.htm", "Save Defaults": "savedefaults.htm", "Netlist Options": "netlistoptions.htm",
             "Compression": "compression.htm", "Search Paths": "symbolandlibrarysearchpaths.htm",
@@ -571,6 +579,22 @@ class SettingsDialog(QDialog):
         v.addWidget(note)
         self._footer(v)
 
+    def _tab_tuxspice(self, page):
+        """TuxSpice's own additions; LTspice has none of these."""
+        v = QVBoxLayout(page)
+        intro = QLabel("Additions TuxSpice makes on top of LTspice.")
+        intro.setAlignment(Qt.AlignCenter)
+        v.addWidget(intro)
+        v.addWidget(self._check("tux/check_before_run", "Check the circuit before each run"))
+        v.addWidget(self._check("tux/notify", "Desktop notification when a simulation finishes"))
+        v.addWidget(_row("...if it took at least (seconds)[*]:", self._spin("tux/notify_after", 0, 3600)))
+        v.addWidget(_row("Autosave unsaved schematics every (minutes, 0 = never)[*]:",
+                         self._spin("tux/autosave_minutes", 0, 120)))
+        v.addWidget(self._check("tux/meas_panel", "Show the measurements panel in waveform windows"))
+        v.addWidget(self._check("tux/step_legend", "Show a legend for .step runs"))
+        v.addWidget(self._check("tux/color_steps", "Draw each .step run in its own colour"))
+        self._footer(v)
+
     # ---------------------------------------------------------------- load/save
     def _set_widget(self, key, value):
         w = self.w[key]
@@ -616,7 +640,8 @@ class SettingsDialog(QDialog):
         prefixes = {"Operation": ("operation/",), "Schematic": ("drafting/", "view/"),
                     "Waveforms": ("waveform/",), "SPICE": ("spice/",), "Save Defaults": ("save/",),
                     "Netlist Options": ("netlist/",), "Compression": ("compression/",),
-                    "Search Paths": ("paths/",), "Internet": ("internet/",), "Hacks": ("hacks/",)}
+                    "Search Paths": ("paths/",), "Internet": ("internet/",), "Hacks": ("hacks/",),
+                    "TuxSpice": ("tux/",)}
         pre = prefixes[self.TABS[self.tabs.currentIndex()]]
         keys = [k for k in self.w if k.startswith(pre)] + (["spice/method"] if "spice/" in pre else [])
         self._load(defaults=True, keys=[k for k in keys if k in self.w] or ["spice/method"])
@@ -633,8 +658,9 @@ class SettingsDialog(QDialog):
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
         from .. import config
-        page = config.HELP_DIR / self.HELP[self.TABS[self.tabs.currentIndex()]]
-        if page.exists():
+        name = self.HELP.get(self.TABS[self.tabs.currentIndex()])
+        page = config.HELP_DIR / name if name else None
+        if page is not None and page.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(page)))
 
     def _colors(self):

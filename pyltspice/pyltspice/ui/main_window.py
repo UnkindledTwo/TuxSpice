@@ -173,10 +173,17 @@ class MainWindow(QMainWindow):
         render.set_font_settings(get("drafting/font"), get("drafting/font_bold"), get("drafting/font_size"),
                                  get("drafting/pen_thickness"))
         self._apply_search_paths()
+        from .autosave import Autosaver
+        self.autosaver = Autosaver(self)
         self._build_actions()
         shortcuts.apply_saved(self.actions)
         self._build_menus()
         self._build_toolbar()
+        from .problems import ProblemsDock
+        self.problems = ProblemsDock(self)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.problems)
+        self.problems.hide()
+        self.problems.visibilityChanged.connect(self.actions["view_problems"].setChecked)
         self.status_label = QLabel()
         f = self.status_label.font()
         f.setBold(True)              # LTspice's status bar text is bold
@@ -185,6 +192,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status_label, 1)
         self.tabs.setVisible(self.actions["view_tabs"].isChecked())
         self.resize(1280, 860)
+        self.setAcceptDrops(True)
         geo = self.settings.value("main/geometry")
         if geo is not None:
             self.restoreGeometry(geo)
@@ -256,6 +264,8 @@ class MainWindow(QMainWindow):
         self.actions["file_print_mono"].setChecked(self.settings_bool("print/monochrome", True))
         A("file_export", "Export as Image...", self.export_image, on="sch")
         A("file_export_data", "&Export data as text", self.export_waveform_data, None, "export", on="plot")
+        A("file_export_plot", "Export Plot (PNG, SVG, CSV)...", self.export_plot, None, "export", on="plot",
+          tip="High-resolution or report-style image, or CSV of every trace and .step run (TuxSpice)")
         A("file_exec_meas", "Execute .MEAS Script", self.execute_meas_script, None, "meas", on="plot")
         A("file_fast_access", "Convert to Fast Access", None, None, "fast_access", on="never",
           tip="TuxSpice has no Fast Access file format")
@@ -284,6 +294,8 @@ class MainWindow(QMainWindow):
           tip="Place a current source on the schematic.", on="sch")
         A("edit_component", "&Component", self.pick_component, ["P", "F2"], "component",
           tip="Place a new component on the schematic.", on="sch")
+        A("edit_import_model", "Place SPICE Model from File...", self.import_model, None, "component", on="sch",
+          tip="Place a part from a vendor .lib/.sub/.mod file; TuxSpice draws its symbol (TuxSpice)")
         A("edit_rotate", "&Rotate", lambda: sw() and sw().rotate_or_mirror(False), "Ctrl+R", "rotate",
           tip="Rotate the selected items.", on="sch")
         A("edit_mirror", "&Mirror", lambda: sw() and sw().rotate_or_mirror(True), "Ctrl+E", "mirror",
@@ -431,10 +443,22 @@ class MainWindow(QMainWindow):
         A("plot_reload", "Reload Plot Settings", self.reload_plot_settings, "Ctrl+Space", "reload", on="plot")
         A("plot_defs", "Edit Plot Defs File", self.open_plot_defs, None, "plot_defs")
         A("plot_add_pane", "Add &Plot Pane", lambda: pv() and pv().add_pane(), on="plot")
+        # TuxSpice extras in waveform windows
+        A("plot_meas_panel", "Measurements Panel", lambda on: self._side_panel(meas=on), None, "check",
+          checkable=True, on="plot", tip="Rise time, overshoot, frequency, -3 dB, margins... of a trace "
+                                         "over the range on screen (TuxSpice)")
+        A("plot_step_legend", "Step Legend", lambda on: self._side_panel(legend=on), None, "check",
+          checkable=True, on="plot", tip="List the .step runs with their parameter values (TuxSpice)")
+        A("plot_histogram", "Histogram of .meas Results...", self.meas_histogram, None, None, on="plot",
+          tip="Distribution of a .meas result over the .step / Monte Carlo runs (TuxSpice)")
         # Simulate
         A("sim_run", "&Run/Pause", self.run_simulation, "Alt+R", "run", tip="Run/Pause LTspice-compatible simulation")
         A("sim_halt", "S&top", self.halt_simulation, "Alt+S", "halt", tip="Stop the current simulation right now")
         A("sim_clear", "Clear Waveforms", self.clear_waveforms, "0", "clear_waves", on="sch")
+        A("sim_check", "Check Circuit", self.check_circuit, None, None, on="sch",
+          tip="Look for mistakes before simulating (TuxSpice)")
+        A("view_problems", "Problems Panel", lambda on: self.problems.setVisible(on), None, "check",
+          checkable=True, tip="Circuit check results and explained simulation errors (TuxSpice)")
         A("eff_start", "Mark Start", None, on="never", tip="Efficiency calculation is not implemented in TuxSpice yet")
         A("eff_end", "Mark End", None, on="never", tip="Efficiency calculation is not implemented in TuxSpice yet")
         # Tools
@@ -607,6 +631,12 @@ class MainWindow(QMainWindow):
             self.actions["plot_undo"].setEnabled(pv.can_undo())
             self.actions["plot_redo"].setEnabled(pv.can_redo())
             self.actions["plot_reload"].setEnabled(pv.plt_path is not None)
+            meas_on, legend_on = pv.side_shown()
+            self.actions["plot_meas_panel"].setChecked(meas_on)
+            self.actions["plot_step_legend"].setChecked(legend_on)
+            self.actions["plot_step_legend"].setEnabled(len(pv.steps()) > 1)
+            from .wavepanel import histogram_data
+            self.actions["plot_histogram"].setEnabled(bool(histogram_data(pv)))
         if sw is not None:
             self.actions["view_opflags"].setChecked(sw.doc.scene.show_op_flags)
         self.actions["view_probe_ref"].setEnabled(sw is not None and sw.sim_plot is not None)
@@ -689,7 +719,54 @@ class MainWindow(QMainWindow):
         w.mode_changed.connect(self.update_orient_actions)
         w.probed.connect(lambda expr, w=w: self._probe(w, expr))
         self._add_window(w, w.title)
+        self.autosaver.track(w)
         return w
+
+    def import_model(self):
+        sw = self.schematic()
+        if sw is not None:
+            from .model_import import ask_and_place
+            ask_and_place(self, sw)
+
+    def open_dropped(self, files, sw=None):
+        """Files dropped on the window: schematics, waveforms and netlists open; SPICE model
+        files (.lib, .sub, .mod...) are placed on the schematic they were dropped on."""
+        from . import model_import
+        target = sw or self.schematic()
+        for f in files:
+            if Path(f).suffix.lower() in (".asc", ".raw", ".net", ".plt"):
+                self.open_file(f)
+            elif target is not None and model_import.is_model_file(f):
+                self.activate_window_of(target)
+                model_import.place_from_file(self, target, f)
+            elif Path(f).is_file():
+                self.open_file(f)
+
+    def dragEnterEvent(self, ev):
+        if ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+
+    def dropEvent(self, ev):
+        files = [u.toLocalFile() for u in ev.mimeData().urls() if u.isLocalFile()]
+        if files:
+            ev.acceptProposedAction()
+            self.open_dropped(files)
+
+    def recover_document(self, text, original=None):
+        """Open an autosaved copy (ui/autosave.py) under its original path, marked modified;
+        Undo goes back to the version on disk."""
+        from .document import _Snapshot
+        sch = asc.parse_asc(text)
+        sch.path = Path(original) if original else None
+        doc = SchematicDocument(sch)
+        try:
+            before = asc.load_asc(sch.path).to_text() if sch.path and sch.path.exists() else None
+        except (OSError, ValueError):
+            before = None
+        before = before or asc.Schematic(items=[]).to_text()
+        if before != text:
+            doc.undo.push(_Snapshot(doc, before, text, "Recover Unsaved Work"))
+        return self._attach_schematic(doc)
 
     # ------------------------------------------------------------ file
     def new_schematic(self):
@@ -802,6 +879,7 @@ class MainWindow(QMainWindow):
                     ev.ignore()
                     return
         self.settings.setValue("main/geometry", self.saveGeometry())
+        self.autosaver.discard_open()
         if getattr(self, "mcp_host", None) is not None:
             self.mcp_host.stop()
         self.halt_simulation()
@@ -979,6 +1057,12 @@ class MainWindow(QMainWindow):
         if path:
             pw.viewer.export_text(path)
 
+    def export_plot(self):
+        pw = self.plot_window()
+        if pw is not None:
+            from .plot_export import ExportDialog
+            ExportDialog(pw.viewer, self).exec()
+
     def show_netlist(self):
         sw = self.schematic()
         if sw is None:
@@ -1128,6 +1212,18 @@ class MainWindow(QMainWindow):
                     return False, "the schematic has no analysis command (.tran, .ac, .dc, .op, .noise, .tf)"
                 self.edit_sim_command()
                 return False, "no analysis command"
+            if interactive and get("tux/check_before_run"):
+                issues = self.check_circuit(sw=w, before_run=True)
+                errors = [i for i in issues if i.severity == "error"]
+                if errors:
+                    text = "\n".join(f"• {i.message}" for i in errors[:6]) + \
+                        (f"\n... and {len(errors) - 6} more" if len(errors) > 6 else "")
+                    r = QMessageBox.warning(
+                        self, APP_NAME, f"The circuit check found {len(errors)} problem(s) that will "
+                        f"probably spoil the simulation:\n\n{text}\n\nDetails are in the Problems "
+                        f"panel. Simulate anyway?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    if r != QMessageBox.Yes:
+                        return False, "stopped by the circuit check"
             nl = generate_netlist(w.doc.sch, w.doc.lib)
             if nl.errors and interactive:
                 QMessageBox.warning(self, "Netlist", "\n".join(nl.errors))
@@ -1160,13 +1256,41 @@ class MainWindow(QMainWindow):
         sim = Simulator(text, base, sim_dirs + [Path(p) for p in paths("paths/lib_paths")] +
                         ([Path(user).expanduser()] if user else []), run_options())
         self.sim_owner = w
+        self._sim_netlist = text
         self._sim_interactive = interactive
         self.sim_thread = SimThread(sim)
         self.sim_thread.done.connect(self._sim_done)
         self.status_label.setText("Simulating...")
+        import time
+        self._sim_started = time.monotonic()
         self.sim_thread.start()
         self._update_actions()
         return True, "\n".join(nl.errors) if isinstance(w, SchematicWindow) else ""
+
+    def activate_window_of(self, widget):
+        for sub in self.mdi.subWindowList():
+            if sub.widget() is widget:
+                self.mdi.setActiveSubWindow(sub)
+                return
+
+    def check_circuit(self, _checked=False, sw=None, before_run=False):
+        """Simulate > Check Circuit (TuxSpice): list problems in the Problems panel. Returns
+        the issues found."""
+        from ..model.check import check_schematic
+        sw = sw or self.schematic()
+        if sw is None:
+            return []
+        try:
+            issues = check_schematic(sw.doc.sch, sw.doc.lib)
+        except Exception as e:  # noqa: BLE001 - a checker bug must never block a run
+            self.status_label.setText(f"Circuit check failed: {e}")
+            return []
+        if issues or not before_run:
+            self.problems.show_issues(sw, issues, f"Check of {sw.title.rstrip('*')}")
+            self.problems.kind = "check"
+        else:
+            self.problems.clear_for(sw)
+        return issues
 
     def halt_simulation(self):
         if self.sim_thread is not None:
@@ -1184,18 +1308,30 @@ class MainWindow(QMainWindow):
             owner.sim_log = self.last_log           # per document, for MCP get_spice_log
             owner.sim_plots = res.plots if res.ok else None
         self._update_actions()
+        self._notify_done(owner, res)
         if not res.ok:
             self.status_label.setText("Simulation failed")
+            from ..sim.diagnose import explain
+            issues = explain(res.log, res.errors, getattr(self, "_sim_netlist", ""))
+            src = owner if isinstance(owner, SchematicWindow) and isValid(owner) else None
+            name = owner.title.rstrip("*") if owner is not None and isValid(owner) else "simulation"
+            self.problems.show_issues(src, issues, f"Run of {name} failed")
+            self.problems.kind = "run"
             if not getattr(self, "_sim_interactive", True):
                 self.status_label.setText("Simulation failed (started by an AI assistant; see Ctrl+L)")
                 return
-            msg = QMessageBox(QMessageBox.Critical, APP_NAME, "\n".join(res.errors[:12]) or "Simulation failed",
-                              parent=self)
+            text = "\n\n".join(i.message + (f"\n{i.hint}" if i.hint else "") for i in issues[:4])
+            text = text or "\n".join(res.errors[:12]) or "Simulation failed"
+            if issues and res.errors:
+                text += "\n\nngspice said:\n" + "\n".join(res.errors[:6])
+            msg = QMessageBox(QMessageBox.Critical, APP_NAME, text, parent=self)
             msg.setDetailedText(res.log[-20000:])
             msg.exec()
             return
         self.status_label.setText("Simulation done" + (f" — {len(res.warnings)} warning(s), see Ctrl+L"
                                                        if res.warnings else ""))
+        if getattr(self.problems, "kind", None) == "run":
+            self.problems.clear_for(owner)
         self._last_raw = res.raw_path
         plot = res.main_plot()
         if plot is None:
@@ -1215,6 +1351,25 @@ class MainWindow(QMainWindow):
                 self._show_plot(owner, p, f"{title} - {p.plotname.split('-')[-1].strip()}", slot)
             return
         self._show_plot(owner, plot, title)
+        for pw in self.plot_windows(owner) if owner is not None else []:
+            pw.viewer.set_meas_table(res.meas_table)
+
+    def _notify_done(self, owner, res):
+        """Desktop notification for a long run that ends while TuxSpice is in the background."""
+        import time
+        from . import notify
+        elapsed = time.monotonic() - getattr(self, "_sim_started", time.monotonic())
+        if not getattr(self, "_sim_interactive", True) or not notify.should_notify(elapsed):
+            return
+        name = owner.title.rstrip("*") if owner is not None and isValid(owner) else "Simulation"
+        if res.ok:
+            notify.notify(self, f"{name}: simulation done", f"Finished in {notify.duration(elapsed)}.")
+        else:
+            from ..sim.diagnose import explain
+            issues = explain(res.log, res.errors)
+            why = issues[0].message if issues else (res.errors[0] if res.errors else "")
+            notify.notify(self, f"{name}: simulation failed",
+                          f"After {notify.duration(elapsed)}. {why}".strip(), ok=False)
 
     def _show_op(self, plot, owner=None):
         if isinstance(owner, SchematicWindow):
@@ -1401,6 +1556,24 @@ class MainWindow(QMainWindow):
             viewer.add_trace(n)
         self._add_window(PlotWindow(viewer, None), f"FFT of {pw.title}")
 
+    def _side_panel(self, meas=None, legend=None):
+        pv = self._plot_viewer()
+        if pv is None:
+            return
+        from .settings_dialog import put
+        if meas is not None:
+            put("tux/meas_panel", meas)
+        if legend is not None:
+            put("tux/step_legend", legend)
+        pv.set_side_panel(meas, legend)
+        self._update_actions()
+
+    def meas_histogram(self):
+        pv = self._plot_viewer()
+        if pv is not None:
+            from .wavepanel import HistogramDialog
+            HistogramDialog(pv, self).show()
+
     def add_traces(self):
         pw = self.plot_window()
         if pw:
@@ -1529,7 +1702,7 @@ class MainWindow(QMainWindow):
 
     def write_image(self):
         """Tools > Write image to file: SVG (LTspice writes .emf, which Linux tools don't use)."""
-        from PySide6.QtCore import QRectF
+        from PySide6.QtCore import QPoint, QRectF
         from PySide6.QtSvg import QSvgGenerator
         w = self.active_widget()
         if w is None:
@@ -1555,7 +1728,7 @@ class MainWindow(QMainWindow):
         if isinstance(w, SchematicWindow):
             w.doc.scene.render(p, QRectF(0, 0, r.width(), r.height()), r)
         else:
-            w.viewer.render(p)
+            w.viewer.render(p, QPoint())
         p.end()
 
     def _set_line_style(self, style):
@@ -1829,6 +2002,7 @@ class MainWindow(QMainWindow):
         from .settings_dialog import get
         from . import appearance
         appearance.apply(QApplication.instance(), get("operation/app_theme"))
+        self.autosaver.apply_settings()
         self.actions["view_grid"].setChecked(get("view/grid"))
         self.actions["view_unconnected"].setChecked(get("drafting/mark_unconnected"))
         self.actions["view_anchors"].setChecked(get("view/mark_anchors"))

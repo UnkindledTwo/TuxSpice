@@ -27,7 +27,7 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   but Qt didn't apply it. On a dark toolbar the icons are restyled the way dark icon themes
   do: white strokes, dark fills, and vivid colours with an azure blue. Settings > Operation > Application theme forces System, Light or Dark (a TuxSpice
   extra). Schematic and plot colours stay LTspice's, set in Tools > Color Preferences.
-- **Settings** (Tools > Settings): LTspice's ten tabs. Drafting options (including pin shorts,
+- **Settings** (Tools > Settings): LTspice's ten tabs (plus a TuxSpice tab for the extras below). Drafting options (including pin shorts,
   ortho stretch and cutting angled wires), schematic font and pen thickness, waveform font and
   trace width, toolbar icon size, background image, save-on-run, expanded listing, Rser warnings,
   .raw/.log directory, automatic .raw deletion, SPICE tolerances, integration method, solver and
@@ -91,6 +91,42 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   netlists of a sheet, and PCB netlists (Tango, PADS, Allegro/Telesis, wire list).
 - **Probing**: click a wire to plot its voltage, a part to plot its current, Alt-click a part to plot its power.
 
+### What TuxSpice adds on top of LTspice
+
+These are extras: files stay plain LTspice files, LTspice's menus keep their items and order
+with a few entries added, and the options are on an eleventh Settings tab, TuxSpice.
+
+- **Circuit check before each run** (Simulate > Check Circuit, and automatically on Run): no
+  ground, parts never given a value (a resistor left at `R`, which ngspice quietly makes 1 mΩ),
+  the classic suffix traps (`1M` on a resistor is one milliohm, `10F` on a capacitor ten
+  femtofarads), loops of ideal voltage sources, duplicate names, open or shorted two-terminal
+  parts, and nets with no DC path to ground. Problems that would spoil the run ask before
+  simulating; the rest are listed. Checked against all 4,365 example schematics: none is
+  blocked.
+- **Readable simulator errors**: ngspice's "singular matrix: check node n003", "timestep too
+  small ... trouble with node", "unknown subckt", "can't find model" become plain explanations
+  with what to do. Errors and check results share a Problems panel; clicking one highlights the
+  part or net on the schematic.
+- **Automatic waveform measurements** (Plot Settings > Measurements Panel): for the chosen trace
+  and step, over the range on screen: min/max/peak-to-peak, average, RMS, frequency, period, duty
+  cycle, 10-90 % rise and fall time, overshoot and undershoot; for AC plots peak gain, -3 dB band
+  edges, unity-gain frequency, phase and gain margin. LTspice only measures what a `.meas` asks.
+- **`.step` legend and histograms**: a Steps panel lists every run by its parameter values
+  (`R=4.7K`) with check boxes, optionally one colour per run, and a histogram with mean, standard
+  deviation and worst runs of any `.meas` result over the runs (Monte Carlo, worst case).
+- **Plot export** (File > Export Plot): PNG at up to 4x resolution, SVG, or CSV of every trace and
+  every `.step` run, in screen colours or a report style (white background, colours darkened to
+  print well).
+- **Vendor models in one step**: drop a `.lib`/`.sub`/`.mod` file on a schematic (or Edit > Place
+  SPICE Model from File) and place any `.subckt` or `.model` in it. TuxSpice draws a symbol with
+  the pin names (read from the `.subckt` line or the vendor's pin-ladder comment), uses
+  LTspice's op-amp symbol for 5-pin op-amps, and includes the file in the netlist. In LTspice
+  this is "open the library, Create Symbol, edit the attributes" for each part.
+- **Autosave and crash recovery**: unsaved schematics are copied every 2 minutes (adjustable) and
+  offered back at the next start if TuxSpice crashed or was killed. Undo on a recovered schematic
+  shows the version on disk.
+- **Desktop notification** when a simulation that took a while finishes in the background.
+
 ### How many LTspice examples run
 
 | Example set | Result |
@@ -113,6 +149,9 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
 | Simulation engine | ngspice | LTspice's own | itself | ngspice |
 | Waveform viewer | LTspice-style, `.raw` files | yes | basic plots | yes |
 | PCB layout | no | no | no | yes |
+| Circuit check before simulating, explained simulator errors | yes | no | no | ERC (connectivity, not SPICE values) |
+| Automatic waveform measurements (rise time, overshoot, -3 dB, margins...) | yes | only via `.meas` | no | no |
+| Place a vendor `.lib` part without making a symbol by hand | yes (drop the file) | no (Create Symbol per part) | n/a | no (assign a model to a symbol) |
 
 - **Compared with ngspice**: ngspice is only the simulator (a command-line program that reads
   netlists), and TuxSpice uses it underneath. On top of it, TuxSpice provides the schematic
@@ -208,8 +247,14 @@ TuxSpice window from accepting assistants.
 | `PYLTSPICE_LIB` | Extracted library directory (default `<data>/ltspice_lib`) |
 | `PYLTSPICE_NGSPICE` | Path to the ngspice binary (default: a copy in the data directory, then `/usr/bin/ngspice`) |
 | `PYLTSPICE_NO_MCP` | Don't let AI assistants attach to this window (no MCP host, no startup offer) |
+| `PYLTSPICE_NGSPICE_MEM` | Memory cap per simulation in GB (default: 60 % of the RAM free when it starts) |
 
-Colors and other preferences are stored in `~/.config/pyltspice`.
+Colors and other preferences are stored in `~/.config/pyltspice`, autosaved copies of unsaved
+schematics in `~/.local/state/pyltspice/autosave`, and symbols generated for vendor model files
+in `<data>/sym/AutoGenerated` (or next to the schematic when the model file is there too).
+
+Each simulation is limited to 60 % of the free memory, so a circuit that makes ngspice grow
+without bound fails with "ngspice ran out of memory" instead of freezing the desktop.
 
 ## Limitations
 
@@ -236,7 +281,7 @@ Run these from the `pyltspice/` directory:
 
 ```sh
 ../.venv/bin/pip install -e '.[test]'
-../.venv/bin/python -m pytest -q                                # full test suite, ~6 s
+../.venv/bin/python -m pytest -q                                # full test suite, ~15 s
 ../.venv/bin/python scripts/sim_example.py ../work <asc...>      # headless netlist + sim, OK/FAIL per file
 ../.venv/bin/python scripts/sweep_examples.py ../work/out.tsv <dir|asc...>  # parallel compatibility sweep
 ../.venv/bin/python scripts/render_png.py <asc> <png>            # render a schematic to PNG

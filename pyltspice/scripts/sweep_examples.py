@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Simulate many schematics in parallel and classify each one.
 
-    sweep_examples.py OUT.tsv [--jobs N] [--timeout S] [--static] FILE_OR_DIR...
+    sweep_examples.py OUT.tsv [--jobs N] [--timeout S] [--mem GB] [--static] FILE_OR_DIR...
 
-Each schematic runs in its own subprocess (killed after --timeout seconds, default 60).
+Each schematic runs in its own subprocess (killed after --timeout seconds, default 60, and
+capped at --mem GB of address space, default 1.5, which its ngspice inherits). Some examples
+grow ngspice past 2 GB; ten of those at once exhausted RAM and the OOM killer took the whole
+terminal with it, so --jobs defaults to what fits in available memory at that cap.
 Results go to OUT.tsv, one line per file: status, seconds, path, first message.
 Status is OK, FAIL, TIMEOUT or ENCRYPTED (an encrypted ADI model, which only LTspice can run).
 --static only netlists and translates (fast): it finds ENCRYPTED and netlist errors without
@@ -11,6 +14,7 @@ simulating. Files already listed in OUT.tsv are skipped, so an interrupted sweep
 """
 import argparse
 import os
+import resource
 import shutil
 import signal
 import subprocess
@@ -55,7 +59,7 @@ print("RESULT", "OK" if r.ok else "FAIL", msg.replace("\t", " ")[:300])
 """
 
 
-def run_one(path: Path, timeout: float, static: bool):
+def run_one(path: Path, timeout: float, static: bool, mem: int):
     t0 = time.time()
     code = WORKER.format(root=str(ROOT), static=static)
     # each run gets its own TMPDIR, removed afterwards: a run killed at the time limit can't
@@ -63,7 +67,8 @@ def run_one(path: Path, timeout: float, static: bool):
     tmp = tempfile.mkdtemp(prefix="sweep-")
     env = dict(os.environ, TMPDIR=tmp)
     proc = subprocess.Popen([sys.executable, "-c", code, str(path)], stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, start_new_session=True, env=env)
+                            stderr=subprocess.PIPE, text=True, start_new_session=True, env=env,
+                            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (mem, mem)))
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -80,14 +85,25 @@ def run_one(path: Path, timeout: float, static: bool):
     return status, time.time() - t0, (msg[0] if msg else "")
 
 
+def mem_available() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) * 1024
+    return 8 << 30
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("paths", nargs="+")
-    ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
+    ap.add_argument("--jobs", type=int)
     ap.add_argument("--timeout", type=float, default=60)
+    ap.add_argument("--mem", type=float, default=1.5, help="GB of address space per run")
     ap.add_argument("--static", action="store_true")
     a = ap.parse_args()
+    mem = int(a.mem * (1 << 30))
+    if a.jobs is None:      # leave a third of free RAM for the desktop
+        a.jobs = max(1, min((os.cpu_count() or 2) - 2, int(mem_available() * 2 / 3 // mem)))
     files = []
     for p in map(Path, a.paths):
         files += sorted(p.rglob("*.asc")) if p.is_dir() else [p]
@@ -96,9 +112,9 @@ def main():
     if out.exists():
         done = {l.split("\t")[2] for l in out.read_text().splitlines() if l.count("\t") >= 3}
     todo = [f for f in files if str(f) not in done]
-    print(f"{len(files)} files, {len(todo)} to run, {a.jobs} jobs", flush=True)
+    print(f"{len(files)} files, {len(todo)} to run, {a.jobs} jobs, {a.mem:g} GB each", flush=True)
     with out.open("a") as fh, ThreadPoolExecutor(a.jobs) as pool:
-        futs = {pool.submit(run_one, f, a.timeout, a.static): f for f in todo}
+        futs = {pool.submit(run_one, f, a.timeout, a.static, mem): f for f in todo}
         for n, fut in enumerate(as_completed(futs), 1):
             status, secs, msg = fut.result()
             fh.write(f"{status}\t{secs:.1f}\t{futs[fut]}\t{msg}\n")

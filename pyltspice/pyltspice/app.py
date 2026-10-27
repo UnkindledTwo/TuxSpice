@@ -30,6 +30,9 @@ def main(argv=None):
         win.open_file(f)
     if not files:
         win.new_schematic()
+    from PySide6.QtCore import QTimer
+    from .ui.autosave import offer_recovery
+    QTimer.singleShot(300, lambda: offer_recovery(win))     # work left unsaved by a crash
     # MCP: AI assistants attach through pyltspice-mcp (Tools > Configure Third-Party AI Assistants)
     import os
     if not os.environ.get("PYLTSPICE_NO_MCP"):

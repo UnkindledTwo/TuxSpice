@@ -14,7 +14,9 @@ own `LTspice64.msi`, and simulates with ngspice.
 - **Libraries stay local.** `scripts/extract_msi.py` unpacks the user's installer into
   `~/.local/share/pyltspice/ltspice_lib`. Nothing from it is committed or redistributed.
 - **Encrypted models stay encrypted.** 2,990 of the 5,023 files in `lib/sub` are encrypted
-  Analog Devices models. Report them as unsupported and never try to decrypt them. They back
+  Analog Devices models. Never try to decrypt them. They are being replaced by behavioural clones
+  fitted as black boxes to the user's own LTspice (section 1c). Clones are generated locally
+  and never committed or redistributed. They back
   3,300 of 6,566 model-file symbols (nearly all ADC, DAC, switch and power parts; about 20% of
   op-amps; none in Contrib) and 3,322 of 4,365 examples (3,312 of them in Applications).
 - **Keep files compatible with LTspice.** A schematic saved here must still open in LTspice. The
@@ -56,7 +58,7 @@ Phase 3 (editing):
       Edit Simulation Command, net label, text
 - [x] LTspice default shortcuts (F2–F9, R/C/L/D/G/T/S, Ctrl+R/E, Space)
 
-Tests: 47 passing in about 5 s.
+Tests: 139 passing in about 15 s.
 
 ## Next steps, in priority order
 
@@ -122,6 +124,56 @@ Open:
     2 `.timedomain` (LTspice-only commands), 2 `.tf` with a sweep argument, 2 diodes with `n=`.
   - 3 LT1964 variants whose model file isn't in the library at all.
 
+### 1c. Behavioural clones of encrypted models (`pyltspice/clonegen/`), started 2026-10-27
+Method: run each part's own example circuit in LTspice under Wine (as is, plus modified benches),
+measure what the part does, fit a per-family TuxSpice template, then compare the clone in ngspice
+against LTspice's waveforms. `ltcompat.clone_for` picks up `<data>/clones/<file>` automatically.
+
+Inventory (`clonegen/inventory.py`, by symbol description; rough, refine per family):
+
+| Family | Files | Examples |
+|---|---|---|
+| buck (590 monolithic SW-pin, 136 external-FET controllers, 86 µModules, 67 other) | 879 | 1,041 |
+| other (supervisors, gate drivers, charge pumps, isolators, PoE...) | 515 | 580 |
+| switch (analog switches/muxes, plus some misfiled switchers) | 351 | 381 |
+| LDO | 247 | 335 |
+| hot-swap / protection / ideal diode | 244 | 251 |
+| boost | 204 | 208 |
+| buck-boost / inverting / SEPIC | 169 | 176 |
+| op-amp | 118 | 149 |
+| charger, ADC, reference, LED, comparator, DAC | 64, 60, 61, 42, 18, 18 | 70, 66, 66, 44, 21, 17 |
+
+Done:
+- [x] LTspice batch runner under Wine, headless and parallel (`clonegen/ltspice.py`)
+- [x] Pin-role mapper (`roles.py`), example-as-bench tooling, overlay plots (`bench.py`, `report.py`)
+- [x] Step-down template (`buck.py`): peak current mode, XSPICE clock with RT law, soft-start/track
+      pin or internal ramp, EN/UVLO hysteresis, start-up delay, sync/diode low side with a
+      zero-current latch, burst/pulse skipping, PG window, INTVCC, boost diode, multi-channel
+- [x] Fitter (`fit.py`): base, RT×1.5, overload (10 mΩ), 50× light load and EN-ramp benches
+- [x] `.tran ... startup` now ramps top-level DC sources over 20 µs (was ignored; general fix)
+- [x] Pilot LT8640: Vout 4.953 V vs LTspice 4.952 V, FB 0.968 V, f 994 kHz both, SS slope and
+      start-up shape close, 11 s vs LTspice 7 s for 1 ms
+
+Next, in order:
+1. **Steady-state jitter** (LT8640): the clone's inductor peaks vary ±0.3 A cycle to cycle (LTspice:
+   none) and Vout ripple is 34 mV p-p vs ~3 mV. Two causes feed each other: the peak-current
+   reset is found with 30–180 ns steps, and the internal ITH node passes FB ripple through.
+   A lower Cp pole alone didn't help. Try: a top-level PULSE breakpoint source at ~12× the fitted
+   fsw (the XSPICE tick version cost 2.5×), a sampled/held ITH, then fit the loop to a
+   load-step bench (gm, Rc, Cc against LTspice's Vout dip and recovery).
+2. Start-up: `tdelay` should be measured from the UVLO crossing and the extrapolated SS start,
+   not from a 2% crossing minus 20 µs. LTspice also shows a small FB bump right after the start.
+3. Batch driver: `scripts/clone_models.py` to run inventory → fit → compare for a family in
+   parallel (4 LTspice jobs, `--mem` cap on ngspice), resumable, writing a pass/fail table
+   (Vout error, fsw error, run time) and overlay PNGs for failures.
+4. Roll out to the 590 monolithic bucks, then controllers (TG/BG gate drive + external FETs),
+   µModules (internal L: VOUT pin), boost, buck-boost, LDO, then the rest by example count.
+5. Measure: re-run `sweep_examples.py` over the 3,322 encrypted-model examples and report
+   how many run with clones, in PLAN and README.
+
+Tools in `work/` used during the pilot (scratch, not part of the package): `cmp.py`, `fit_one.py`,
+`regen.py`, `variant*.py`, `ngdump.py`, `ngcycles.py`.
+
 ### 2. UI parity, in progress
 - `docs/ui_spec.md` lists every menu item, shortcut and behaviour with its source (help page or
   recollection) and status. Currently 45 done, 10 partial, 12 missing (one of them, Update
@@ -180,6 +232,18 @@ Open:
   and checking the editing dialogs (component, analysis) against LTspice.
 
 ### 3. Remaining features
+- Done: memory cap on every ngspice run (`runner.memory_limit`: 60 % of free RAM, or
+  `PYLTSPICE_NGSPICE_MEM`), and `sweep_examples.py --mem` (1.5 GB per job, jobs sized to free RAM).
+  A runaway run (LT6106.asc grew to 13.5 GB) on this swapless 15 GB machine made the OOM killer
+  take the terminal down; now ngspice fails with "ran out of memory" instead. LT6106 itself still
+  needs a look (likely a collapsing time step piling up points with `savecurrents`).
+- Done: quality-of-life extras on top of LTspice (README "What TuxSpice adds", ui_spec "TuxSpice
+  extras"): circuit check before runs (no example schematic is blocked: 0 errors over all 4,365),
+  explained ngspice errors in a Problems panel, automatic waveform measurements, step legend and
+  .meas histograms, PNG/SVG/CSV plot export with a report style, vendor model files placed with a
+  generated symbol, autosave/crash recovery, desktop notifications. Possible next ones: overlay
+  of the previous run's traces, .param sliders that re-run, reload when the .asc changes on disk,
+  a visual diff of two schematic revisions.
 - Symbol editor for `.asy` files (File > New Symbol, Edit > Add Pin/Port).
 - Colour dialog that works by clicking a sample schematic like LTspice's.
 - Plot settings: axis ranges and colours from `.plt`.

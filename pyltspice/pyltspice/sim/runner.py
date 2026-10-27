@@ -1,6 +1,8 @@
 """Run ngspice on a translated netlist, including LTspice-style .step sweeps."""
 import itertools
+import os
 import re
+import resource
 import subprocess
 import tempfile
 import time
@@ -13,6 +15,34 @@ from .rawfile import Plot, combine_steps, read_raw
 
 SPICEINIT = "set ngbehavior=ltpsa\nset filetype=binary\n"
 ANALYSIS_CARDS = (".tran", ".ac", ".dc", ".op", ".noise", ".tf", ".pz", ".disto", ".four", ".sens")
+
+
+def memory_limit() -> int:
+    """Bytes of address space one ngspice run may use. Some circuits grow ngspice without
+    bound (one reached 13 GB); on a machine without swap the kernel's OOM killer then takes
+    out the desktop session or terminal along with it, so the run is capped instead."""
+    gb = os.environ.get("PYLTSPICE_NGSPICE_MEM")
+    if gb:
+        return int(float(gb) * 2**30)
+    avail = 8 << 30
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                avail = int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return max(1 << 30, int(avail * MEM_FRACTION))
+
+
+def _limit_memory(pid: int):
+    # set from outside (not preexec_fn, which isn't safe with the GUI's threads); ngspice
+    # allocates little before reading the netlist. Never above a limit inherited from a caller.
+    try:
+        hard = resource.getrlimit(resource.RLIMIT_AS)[1]
+        cap = memory_limit() if hard == resource.RLIM_INFINITY else min(memory_limit(), hard)
+        resource.prlimit(pid, resource.RLIMIT_AS, (cap, cap))
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 @dataclass
@@ -90,6 +120,7 @@ class SimResult:
     errors: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     measurements: list = field(default_factory=list)   # (name, text)
+    meas_table: dict = field(default_factory=dict)     # name -> [(step label, value or None)]
     raw_path: Path | None = None
     ok: bool = False
 
@@ -115,6 +146,8 @@ _NONCONVERGENCE = ("timestep too small", "gmin stepping failed", "source steppin
                    "could not be simulated", "no convergence")
 
 
+MEM_FRACTION = 0.6          # of MemAvailable one ngspice may use (PYLTSPICE_NGSPICE_MEM=GB overrides)
+_OUT_OF_MEMORY = ("can't allocate", "out of memory", "memory allocation error")
 SENSE = "v__isense_"         # 0 V sources measuring R/C/L currents in .ac runs (see rawfile)
 
 
@@ -262,6 +295,7 @@ class Simulator:
         self.proc = subprocess.Popen([exe, "-b", "-r", str(raw), "-o", str(log), str(cir)],
                                      cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL)
+        _limit_memory(self.proc.pid)
         timed_out = False
         try:
             extra, _ = self.proc.communicate(timeout=timeout)
@@ -275,6 +309,8 @@ class Simulator:
         text += extra.decode(errors="replace")
         if timed_out:
             return [], text + f"\nError: gave up after {timeout:.0f} s\n", raw
+        if self.proc.returncode and any(m in text.lower() for m in _OUT_OF_MEMORY):
+            text += f"\nError: ngspice ran out of memory (limit {memory_limit() / 2**30:.1f} GB)\n"
         plots = read_raw(raw) if raw.exists() and raw.stat().st_size else []
         return [filter_vectors(p, self.options) for p in plots], text, raw
 
@@ -386,7 +422,7 @@ class Simulator:
                 res.ok = True
                 if tr.measures:
                     parsed = [m for m in (measure.parse(l) for l in tr.measures) if m]
-                    res.measurements = measure.run_measures(parsed, res.plots, tr.params)
+                    res.measurements = measure.run_measures(parsed, res.plots, tr.params, res.meas_table)
                 if tr.savebias:
                     self._save_bias(res.plots, *tr.savebias)
                 raw_out = self.out_base.with_suffix(".raw")

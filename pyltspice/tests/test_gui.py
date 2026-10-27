@@ -460,7 +460,7 @@ def test_settings_remembered_only_when_starred(qapp):
         sd.put(k, sd.DEFAULTS[k])
     assert sd.spice_options() == ""
     dlg = sd.SettingsDialog(None, "Hacks")
-    assert dlg.tabs.tabText(dlg.tabs.currentIndex()) == "Hacks" and dlg.tabs.count() == 10
+    assert dlg.tabs.tabText(dlg.tabs.currentIndex()) == "Hacks" and dlg.tabs.count() == 11
     _dispose(dlg)
 
 

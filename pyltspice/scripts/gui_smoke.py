@@ -7,6 +7,7 @@ from pathlib import Path
 
 # don't write recent files / window geometry into the user's real settings
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="pyltspice-smoke-config-")
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="pyltspice-smoke-state-")   # no autosaves
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication

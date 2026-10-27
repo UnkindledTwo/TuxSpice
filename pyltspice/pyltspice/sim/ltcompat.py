@@ -49,6 +49,7 @@ class Translation:
     analysis: str = ""                               # tran / ac / dc / op / noise / tf
     dc_sweep: object = None                          # StepSpec for a .dc dec/oct/list sweep
     savebias: tuple | None = None                    # (.savebias file, time or None), done by the runner
+    startup: bool = False                            # .tran ... startup
 
 
 def join_continuations(text: str):
@@ -234,6 +235,12 @@ def declare_passed_params(lines, passed: dict):
     return out
 
 
+def clone_for(p: Path) -> Path | None:
+    """TuxSpice's behavioural clone of encrypted library `p` (see pyltspice.clonegen), if made."""
+    c = config.CLONE_DIR / p.name
+    return c if c.exists() else None
+
+
 def _nested_include(name, parent: Path, warnings, errors, passed, seen) -> str:
     """'.lib UniversalOpAmp2.lib' inside a library (AD8310.lib): resolve it like the netlist's
     own .lib lines and include an ngspice-readable copy."""
@@ -243,6 +250,10 @@ def _nested_include(name, parent: Path, warnings, errors, passed, seen) -> str:
             errors.append(f"{parent.name}: could not open library file \"{name}\"")
         return f"* missing include {name}"
     if scan_definitions(str(p))[2]:
+        if clone_for(p):
+            if warnings is not None:
+                warnings.append(f"{p.name}: encrypted; using TuxSpice's behavioural clone")
+            return f'.include "{clone_for(p)}"'
         if errors is not None:
             errors.append(f"{p.name} is an encrypted Analog Devices model; it only runs inside LTspice.")
         return f"* encrypted include {name}"
@@ -1218,6 +1229,11 @@ def translate(text: str, search_dirs=(), default_devices=True, default_libraries
                 continue
             elif head in (".lib", ".include", ".inc"):
                 args = tok[1:]
+                if args and args[0].startswith('"') and not (len(args[0]) > 1 and args[0].endswith('"')):
+                    # a quoted path with spaces: .lib "/home/me/My Models/x.lib"
+                    end = next((i for i, a in enumerate(args) if i and a.endswith('"')), None)
+                    if end is not None:
+                        args = [" ".join(args[:end + 1])] + args[end + 1:]
                 if head == ".lib" and len(args) >= 2:
                     out.append(line)      # ngspice-style section library
                     continue
@@ -1228,6 +1244,14 @@ def translate(text: str, search_dirs=(), default_devices=True, default_libraries
                     tr.errors.append(f"Could not open library file \"{args[0]}\"")
                     continue
                 models, subckts, encrypted = scan_definitions(str(p))
+                if encrypted and clone_for(p):
+                    if str(p) not in includes:
+                        includes.append(str(p))
+                        tr.warnings.append(f"{p.name}: encrypted; using TuxSpice's behavioural clone")
+                        out.append(f'.include "{clone_for(p)}"')
+                        defined_subckts |= {m.group(1).lower() for m in re.finditer(
+                            r"(?im)^\.subckt\s+(\S+)", clone_for(p).read_text())}
+                    continue
                 if encrypted:
                     tr.errors.append(f"{p.name} is an encrypted Analog Devices model; "
                                      "it only runs inside LTspice.")
@@ -1371,6 +1395,8 @@ def translate(text: str, search_dirs=(), default_devices=True, default_libraries
     out = adevices.rewrite_ideal_diodes(out)
     out = adevices.rewrite_igbts(out, tr.warnings)
     out = declare_passed_params(out, passed)
+    if tr.startup:
+        out = startup_ramps(out)
     used = funcs_used("\n".join(out))
     # scan the rewritten copies (and their nested includes): rewrites can introduce helpers
     pending = re.findall(r'^\.include "([^"]+)"', "\n".join(out), re.M)
@@ -1431,6 +1457,25 @@ def _is_known_model(t, defined):
     return t in defined or t in BUILTIN_MODELS or standard_model(t) is not None
 
 
+def startup_ramps(lines):
+    """`.tran ... startup`: LTspice ramps the top-level independent sources up from zero over
+    the first 20 µs (help: startup.htm). Plain DC sources get that ramp as a PWL; sources with
+    a time function are left alone."""
+    out, depth = [], 0
+    for line in lines:
+        low = line.lower()
+        if low.startswith(".subckt"):
+            depth += 1
+        elif low.startswith(".ends"):
+            depth -= 1
+        elif depth == 0 and low[:1] in "vi":
+            m = re.fullmatch(r"(\S+\s+\S+\s+\S+)\s+(?:dc\s+)?([^\s{}()]+)\s*", line, re.I)
+            if m and spicenum.parse(m.group(2)) is not None:
+                line = f"{m.group(1)} PWL(0 0 20u {spicenum.parse(m.group(2)):.12g})"
+        out.append(line)
+    return out
+
+
 def _translate_tran(tok, tr: Translation) -> str:
     args, mods = [], []
     for t in tok[1:]:
@@ -1438,8 +1483,9 @@ def _translate_tran(tok, tr: Translation) -> str:
             mods.append(t.lower())
         else:
             args.append(t)
+    tr.startup = tr.startup or "startup" in mods
     for m in mods:
-        if m != "uic":
+        if m not in ("uic", "startup"):
             tr.warnings.append(f".tran modifier '{m}' is not supported by ngspice and was ignored")
     if len(args) == 1:
         tstop = args[0]

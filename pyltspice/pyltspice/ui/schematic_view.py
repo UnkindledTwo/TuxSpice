@@ -140,6 +140,7 @@ class SchematicScene(QGraphicsScene):
 class SchematicView(QGraphicsView):
     """Wheel zooms about the cursor, left-drag on empty paper pans (as in LTspice)."""
     mouse_moved = Signal(float, float)
+    files_dropped = Signal(list)       # local files dropped on the sheet (TuxSpice: model files)
     ZOOM_STEP = 1.25
 
     def __init__(self, scene: SchematicScene, parent=None):
@@ -163,6 +164,33 @@ class SchematicView(QGraphicsView):
         self._history = []         # previous view transforms, for Zoom Back
         self._pan_from = None
         self.tool = None           # active editing tool (see tools.py)
+
+    # -- files dropped on the sheet
+    @staticmethod
+    def _local_files(ev):
+        md = ev.mimeData()
+        urls = md.urls() if md.hasUrls() else []
+        return [u.toLocalFile() for u in urls if u.isLocalFile()]
+
+    def dragEnterEvent(self, ev):
+        if self._local_files(ev):
+            ev.acceptProposedAction()
+        else:
+            super().dragEnterEvent(ev)
+
+    def dragMoveEvent(self, ev):
+        if self._local_files(ev):
+            ev.acceptProposedAction()
+        else:
+            super().dragMoveEvent(ev)
+
+    def dropEvent(self, ev):
+        files = self._local_files(ev)
+        if files:
+            ev.acceptProposedAction()
+            self.files_dropped.emit(files)
+        else:
+            super().dropEvent(ev)
 
     # -- view helpers
     def remember_view(self):

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, Q
 from shiboken6 import isValid
 
 from ..sim.spicenum import fmt
+from ..sim.wavemeasure import gain_margin, phase_margin  # noqa: F401 - used below, re-exported
 from ..sim.vectors import VectorSet, unit_of
 from .theme import TRACE_COLORS, theme
 
@@ -53,43 +54,6 @@ def decimate(x, y, x0, x1, cols):
         hit = np.flatnonzero(ys == red.reduceat(ys, starts)[seg])
         keep.append(hit[np.r_[True, seg[hit][1:] != seg[hit][:-1]]])   # first hit per column
     return i0 + np.unique(np.concatenate(keep))
-
-
-def _crossing(f, v, i, level):
-    """Frequency (interpolated in log f) and fraction where v crosses level between i and i+1."""
-    t = (level - v[i]) / (v[i + 1] - v[i])
-    return 10 ** (np.log10(f[i]) + t * (np.log10(f[i + 1]) - np.log10(f[i]))), t
-
-
-def phase_margin(f, z):
-    """(frequency, degrees) at the first downward 0 dB crossing of the loop gain z, or None.
-    LTspice doesn't document its Annotate Phase Margin; this is the textbook definition,
-    180 deg + phase there, wrapped to (-180, 180] so it doesn't matter which multiple of
-    360 deg the unwrapped phase starts at."""
-    mag = 20 * np.log10(np.maximum(np.abs(z), 1e-300))
-    ph = np.degrees(np.unwrap(np.angle(z)))
-    hits = np.flatnonzero((mag[:-1] > 0) & (mag[1:] <= 0))
-    if not len(hits):
-        return None
-    i = hits[0]
-    fc, t = _crossing(f, mag, i, 0.0)
-    pm = (ph[i] + t * (ph[i + 1] - ph[i]) + 360) % 360 - 180
-    return fc, (180.0 if pm == -180 else pm)
-
-
-def gain_margin(f, z):
-    """(frequency, dB) at the first phase crossing of -180 deg (mod 360), or None.
-    Gain margin is minus the loop gain there (undocumented in LTspice, as phase_margin)."""
-    mag = 20 * np.log10(np.maximum(np.abs(z), 1e-300))
-    ph = np.degrees(np.unwrap(np.angle(z)))
-    turn = np.floor((ph + 180) / 360)          # which odd multiple of 180 deg lies below
-    hits = np.flatnonzero(turn[1:] != turn[:-1])
-    if not len(hits):
-        return None
-    i = hits[0]
-    level = 360 * max(turn[i], turn[i + 1]) - 180
-    fc, t = _crossing(f, ph, i, level)
-    return fc, -(mag[i] + t * (mag[i + 1] - mag[i]))
 
 
 class TraceCurve(pg.PlotDataItem):
@@ -437,6 +401,7 @@ class Pane(QWidget):
             pass
         self.left.setStyle(showValues=False)
         self.plot.scene().sigMouseMoved.connect(self._mouse_moved)
+        pi.getViewBox().sigXRangeChanged.connect(lambda *_: viewer.range_changed.emit())
         self.plot.setContextMenuPolicy(Qt.CustomContextMenu)
         self.plot.customContextMenuRequested.connect(lambda p: viewer.context_menu(self, self.plot.mapToGlobal(p)))
         self.plot.scene().sigMouseClicked.connect(self._clicked)
@@ -562,6 +527,8 @@ class Pane(QWidget):
         if self.viewer.is_ac:
             trace.vb = pi.getViewBox()
         self.traces.append(trace)
+        if self.viewer.color_steps:
+            self.viewer.restyle_steps(trace)
         self.refresh_labels()
         if self.viewer.autoranging:
             self.autorange()
@@ -583,6 +550,8 @@ class WaveformViewer(QWidget):
     status = Signal(str)
     traces_changed = Signal()
     save_plot_settings = Signal()
+    range_changed = Signal()          # x range of a pane changed (zoom, pan)
+    steps_changed = Signal()          # which .step runs are shown
 
     def __init__(self, plot, title="", parent=None):
         super().__init__(parent)
@@ -613,11 +582,20 @@ class WaveformViewer(QWidget):
         self.annot_color = QColor("#ffffff")
         self._anno_start = None
         self._undo, self._redo, self._quiet = [], [], False
+        self.meas_table = {}             # .meas name -> [(step label, value)] of the run (TuxSpice)
+        self.color_steps = bool(_setting("tux/color_steps"))
+        self.side = None                 # Measurements / Steps panel (wavepanel.SidePanel)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        self.hsplit = QSplitter(Qt.Horizontal)
         self.split = QSplitter(Qt.Vertical)
-        lay.addWidget(self.split)
+        self.hsplit.addWidget(self.split)
+        self.hsplit.setStretchFactor(0, 1)
+        lay.addWidget(self.hsplit)
         self.add_pane()
+        stepped = len(self.steps()) > 1
+        self.set_side_panel(meas=bool(_setting("tux/meas_panel")),
+                            legend=stepped and bool(_setting("tux/step_legend")))
 
     @property
     def x(self):
@@ -1005,6 +983,8 @@ class WaveformViewer(QWidget):
                     pen = QPen(it.opts["pen"]) if hasattr(it, "opts") and "pen" in it.opts else QPen()
                     pen.setColor(t.color)
                     it.setPen(pen)
+                if self.color_steps:
+                    self.restyle_steps(t)
             p.refresh_labels()
 
     def set_mark_points(self, on):
@@ -1048,6 +1028,61 @@ class WaveformViewer(QWidget):
             for t in p.traces:
                 for (_, it), k in zip(t.items, t.item_steps):
                     it.setVisible(steps is None or k in steps)
+        self.steps_changed.emit()
+
+    # -- TuxSpice extras: side panel, colour per .step run
+    def step_labels(self):
+        n = len(self.steps())
+        labels = list(self.plot.step_labels)[:n]
+        return [lab or f"Step {i + 1}" for i, lab in enumerate(labels + [""] * (n - len(labels)))]
+
+    def step_color(self, k):
+        return QColor(TRACE_COLORS[k % len(TRACE_COLORS)])
+
+    def set_color_steps(self, on):
+        self.color_steps = on
+        for p in self.panes:
+            for t in p.traces:
+                self.restyle_steps(t)
+        self.steps_changed.emit()
+
+    def restyle_steps(self, trace):
+        """Colour each .step run of a trace by its step (or all in the trace colour)."""
+        for (_, it), k in zip(trace.items, trace.item_steps):
+            if not (hasattr(it, "opts") and "pen" in it.opts):
+                continue
+            col = self.step_color(k) if self.color_steps and len(self.steps()) > 1 else trace.color
+            pen = QPen(it.opts["pen"])
+            pen.setColor(col)
+            it.setPen(pen)
+            if self.mark_points:
+                it.setSymbolPen(col)
+                it.setSymbolBrush(col)
+
+    def set_meas_table(self, table):
+        self.meas_table = dict(table or {})
+        if self.side is not None:
+            self.side.steps.refresh()
+
+    def side_shown(self):
+        """(measurements tab shown, step legend shown)."""
+        if self.side is None or not self.side.isVisible():
+            return False, False
+        return self.side.has_meas, self.side.has_legend
+
+    def set_side_panel(self, meas=None, legend=None):
+        from .wavepanel import SidePanel
+        cur_m, cur_l = self.side_shown()
+        meas = cur_m if meas is None else meas
+        legend = cur_l if legend is None else legend
+        if self.side is None and not (meas or legend):
+            return
+        if self.side is None:
+            self.side = SidePanel(self)
+            self.hsplit.addWidget(self.side)
+            self.hsplit.setStretchFactor(1, 0)
+            self.hsplit.setSizes([max(self.width() - 260, 400), 260])
+        self.side.show_tabs(meas, legend)
 
     def manual_limits_dialog(self):
         """Plot Settings > Manual Limits for the active pane."""

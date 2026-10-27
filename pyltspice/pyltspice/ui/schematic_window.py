@@ -42,6 +42,7 @@ class SchematicWindow(QWidget):
         doc.changed.connect(self.title_changed)
         doc.undo.cleanChanged.connect(lambda _: self.title_changed.emit())
         self.view.mouse_moved.connect(self._mouse_moved)
+        self.view.files_dropped.connect(lambda files: main.open_dropped(files, self))
         self.setAttribute(Qt.WA_DeleteOnClose)
 
     # -- window identity

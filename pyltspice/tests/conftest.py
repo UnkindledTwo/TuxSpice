@@ -7,6 +7,8 @@ import tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # keep the user's real settings (shortcuts, colours, recent files) out of the tests
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="pyltspice-test-config-")
+# and never write autosave copies (ui/autosave.py) where a real TuxSpice would offer them
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="pyltspice-test-state-")
 
 from pyltspice import config  # noqa: E402
 

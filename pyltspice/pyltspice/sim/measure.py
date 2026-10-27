@@ -224,9 +224,10 @@ def evaluate(m, ctx: Context):
     raise MeasError(f"unsupported .meas form '{rest[0]}'")
 
 
-def run_measures(measures, plots, params=None):
+def run_measures(measures, plots, params=None, table=None):
     """measures: parsed dicts. plots: list of rawfile.Plot (one per analysis).
-    Returns list of (name, text) in LTspice log style; stepped plots give one row per step."""
+    Returns list of (name, text) in LTspice log style; stepped plots give one row per step.
+    `table`, if given, receives {name: [(step label, value or None)]} (for histograms)."""
     params = params or {}
     out = []
     results = {}
@@ -249,6 +250,8 @@ def run_measures(measures, plots, params=None):
             except MeasError as e:
                 val, txt = None, f"FAIL ({e})"
             rows.append((label, val, txt))
+        if table is not None:
+            table[m["name"]] = [(label, val) for label, val, _ in rows]
         if rows and rows[0][1] is not None:
             results[m["name"].lower()] = rows[-1][1] if len(rows) == 1 else rows[0][1]
         for label, _, txt in rows:

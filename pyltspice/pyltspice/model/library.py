@@ -133,7 +133,7 @@ def _subdirs(folder: str, _stamp) -> tuple:
 def default_library() -> SymbolLibrary:
     global _default
     if _default is None:
-        _default = SymbolLibrary([config.SYM_DIR, config.BUNDLED_SYM])
+        _default = SymbolLibrary([config.SYM_DIR, config.BUNDLED_SYM, config.USER_SYM_DIR])
     return _default
 
 
@@ -141,6 +141,6 @@ def set_extra_roots(roots):
     """Settings > Search Paths: symbol folders searched after lib/sym (new schematics use them)."""
     global _default
     roots = [Path(r) for r in roots if Path(r).is_dir()]
-    if _default is not None and _default.roots[1:-1] == roots:
+    if _default is not None and _default.roots[1:-2] == roots:
         return
-    _default = SymbolLibrary([config.SYM_DIR] + roots + [config.BUNDLED_SYM])
+    _default = SymbolLibrary([config.SYM_DIR] + roots + [config.BUNDLED_SYM, config.USER_SYM_DIR])

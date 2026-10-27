@@ -204,13 +204,18 @@ def _attr(inst, sym, key):
     return v or ""
 
 
+def spice_name(inst, sym) -> str:
+    """The instance's name in the netlist: its InstName, with the Prefix letter put in front
+    when it doesn't start with it (U1 with Prefix X nets as XU1)."""
+    letter = (_attr(inst, sym, "Prefix") or "X")[0].upper()
+    name = inst.name or "?"
+    return name if name[0].upper() == letter else letter + name
+
+
 def element_line(inst, sym, nodes) -> tuple[str, list]:
     """SPICE line for one symbol instance, plus files it needs included."""
-    prefix = _attr(inst, sym, "Prefix") or "X"
-    letter = prefix[0].upper()
-    name = inst.name or "?"
-    if name[0].upper() != letter:
-        name = letter + name
+    letter = (_attr(inst, sym, "Prefix") or "X")[0].upper()
+    name = spice_name(inst, sym)
     includes = []
     if letter == "J" and len(nodes) == 2 and not _attr(inst, sym, "Value"):
         # Misc\\jumper: a short that lets one net carry two names
@@ -377,7 +382,7 @@ def generate_netlist(sch: Schematic, lib: SymbolLibrary | None = None) -> Netlis
         if sub:
             lines += sub
     for inc in includes:
-        lines.append(f".lib {inc}")
+        lines.append(f'.lib "{inc}"' if " " in inc else f".lib {inc}")
     if not any(l.strip().lower().startswith(".backanno") for l in lines):
         lines.append(".backanno")
     lines.append(".end")
