@@ -478,9 +478,12 @@ class MainWindow(QMainWindow):
         al("ctx_waveform_settings", "tools_settings", "Waveform Settings")
         self.actions["ctx_waveform_settings"].triggered.disconnect()
         self.actions["ctx_waveform_settings"].triggered.connect(lambda: self.open_settings("Waveforms"))
-        for key, text in (("ctx_plot_move", "Move\tM"), ("ctx_plot_stretch", "Stretch\tS"),
-                          ("ctx_plot_duplicate", "Duplicate\tCtrl+C")):
-            A(key, text, None, on="never", tip="Plot annotations can't be moved yet")
+        for key, text, mode, keyseq, ic, tip in (
+                ("ctx_plot_move", "Move", "note_move", "M", "move", "Move an annotation."),
+                ("ctx_plot_stretch", "Stretch", "note_stretch", "S", "drag",
+                 "Drag one end or corner of an annotation."),
+                ("ctx_plot_duplicate", "Duplicate", "note_dup", "Ctrl+C", "duplicate", "Copy an annotation.")):
+            A(key, text, lambda _=False, m=mode: pv() and pv().start_note_edit(m), keyseq, ic, tip=tip, on="plot")
 
     def _build_menus(self):
         from . import menus

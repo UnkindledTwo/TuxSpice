@@ -1,10 +1,13 @@
 """Waveform viewer: stacked plot panes with LTspice-style trace labels."""
+import math
+
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QPen
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QMenu, QSplitter, QVBoxLayout, QWidget)
+from shiboken6 import isValid
 
 from ..sim.spicenum import fmt
 from ..sim.vectors import VectorSet, unit_of
@@ -217,6 +220,88 @@ class Trace:
         self.pane = None
 
 
+class Note:
+    """A plot annotation (Notes & Annotations), kept as data so Edit > Move/Stretch/Duplicate/
+    Delete and Plot Settings > Undo work on it; `items` are the graphics that draw it.
+    pts are view coordinates (log10 f on AC plots): one for text and markers, two otherwise."""
+
+    def __init__(self, kind, pane, pts, color, text="", anchor=(0, 1)):
+        self.kind, self.pane, self.pts = kind, pane, [tuple(p) for p in pts]
+        self.color, self.text, self.anchor = QColor(color), text, anchor
+        self.items = []
+
+    def copy(self):
+        return Note(self.kind, self.pane, self.pts, self.color, self.text, self.anchor)
+
+    @property
+    def vb(self):
+        return self.pane.plot.getPlotItem().getViewBox()
+
+    @property
+    def label(self):
+        return self.items[-1] if self.kind in ("text", "marker") and self.items else None
+
+    def draw(self):
+        from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem
+        self.erase()
+        vb = self.vb
+        pen = QPen(self.color)
+        pen.setCosmetic(True)
+        pen.setWidthF(1.5)
+        (x0, y0), (x1, y1) = self.pts[0], self.pts[-1]
+        if self.kind in ("text", "marker"):
+            if self.kind == "marker":
+                self.items.append(pg.ScatterPlotItem([x0], [y0], size=7, symbol="o",
+                                                     pen=pg.mkPen(self.color), brush=None))
+            label = pg.TextItem(self.text, color=self.color, anchor=self.anchor)
+            label.setFont(plot_font())
+            label.setPos(x0, y0)
+            self.items.append(label)
+        elif self.kind in ("line", "arrow"):
+            self.items.append(pg.PlotCurveItem([x0, x1], [y0, y1], pen=pen))
+            if self.kind == "arrow":
+                # pyqtgraph arrows point along -angle in screen space; aim from tail to head
+                a, b = vb.mapViewToScene(QPointF(x0, y0)), vb.mapViewToScene(QPointF(x1, y1))
+                ang = math.degrees(math.atan2(b.y() - a.y(), b.x() - a.x())) + 180
+                self.items.append(pg.ArrowItem(pos=(x1, y1), angle=ang, headLen=12, pen=pen,
+                                               brush=self.color))
+        else:
+            cls = QGraphicsRectItem if self.kind == "rect" else QGraphicsEllipseItem
+            item = cls(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+            item.setPen(pen)
+            self.items.append(item)
+        for it in self.items:
+            vb.addItem(it, ignoreBounds=True)
+
+    def erase(self):
+        for it in self.items:
+            if isValid(it) and it.scene() is not None:
+                it.scene().removeItem(it)
+        self.items = []
+
+    def _scene_pts(self):
+        return [self.vb.mapViewToScene(QPointF(*p)) for p in self.pts]
+
+    def hit(self, pos, tol=5):
+        """Is scene point pos on this note (within tol pixels)?"""
+        pts = self._scene_pts()
+        if self.kind in ("text", "marker"):
+            near_dot = self.kind == "marker" and (pts[0] - pos).manhattanLength() <= 2 * tol
+            return near_dot or self.label.sceneBoundingRect().adjusted(-tol, -tol, tol, tol).contains(pos)
+        if self.kind in ("line", "arrow"):
+            a, b = pts
+            d = b - a
+            n2 = d.x() ** 2 + d.y() ** 2
+            t = 0.0 if n2 == 0 else max(0.0, min(1.0, QPointF.dotProduct(pos - a, d) / n2))
+            q = a + d * t - pos
+            return math.hypot(q.x(), q.y()) <= tol
+        return QRectF(pts[0], pts[1]).normalized().adjusted(-tol, -tol, tol, tol).contains(pos)
+
+    def nearest_point(self, pos):
+        """Index of the end (or corner) nearest to scene point pos, for Stretch."""
+        return min(range(len(self.pts)), key=lambda i: (self._scene_pts()[i] - pos).manhattanLength())
+
+
 class Cursor:
     """A draggable crosshair locked onto one trace (LTspice: click a trace label)."""
 
@@ -379,6 +464,8 @@ class Pane(QWidget):
         self.phase_vb.linkedViewChanged(vb, self.phase_vb.XAxis)
 
     def _mouse_moved(self, pos):
+        if self.viewer.carry is not None and self.viewer.carry[0].pane is self:
+            self.viewer.note_drag(pos)
         vb = self.plot.getPlotItem().getViewBox()
         if not vb.sceneBoundingRect().contains(pos):
             return
@@ -393,6 +480,9 @@ class Pane(QWidget):
             vb = self.plot.getPlotItem().getViewBox()
             if vb.sceneBoundingRect().contains(ev.scenePos()):
                 self.viewer.annotation_click(self, vb.mapSceneToView(ev.scenePos()))
+                ev.accept()
+        elif ev.button() == Qt.LeftButton and self.viewer.mode in NOTE_EDIT:
+            if self.viewer.note_click(self, ev.scenePos()):
                 ev.accept()
 
     def _label_clicked(self, link):
@@ -514,7 +604,8 @@ class WaveformViewer(QWidget):
         self.mode = None            # 'delete' or an annotation kind
         self.menu_provider = None   # main window's right-click menu
         self.plt_path = None        # plot settings file last loaded or saved
-        self.annotations = []
+        self.notes = []                  # Notes & Annotations
+        self.carry = None                # (note, point index or None, grab point, original pts)
         self.annot_color = QColor("#ffffff")
         self._anno_start = None
         self._undo, self._redo, self._quiet = [], [], False
@@ -722,10 +813,16 @@ class WaveformViewer(QWidget):
         if len(self.panes) <= 1:
             return
         self.record()
+        self._drop_notes(pane)
         self.panes.remove(pane)
         pane.setParent(None)
         pane.deleteLater()
         self.active = self.panes[-1]
+
+    def _drop_notes(self, pane):
+        for n in [n for n in self.notes if n.pane is pane]:
+            n.erase()
+            self.notes.remove(n)
 
     def autorange(self):
         for p in self.panes:
@@ -741,12 +838,16 @@ class WaveformViewer(QWidget):
 
     # -- Plot Settings commands (LTspice 26 menu)
     def record(self):
-        """Remember the trace layout for Plot Settings > Undo."""
+        """Remember traces and annotations for Plot Settings > Undo."""
         if self._quiet:
             return
-        self._undo.append(self.layout())
+        self._undo.append(self._state())
         del self._undo[:-50]
         self._redo.clear()
+
+    def _state(self):
+        notes = [(self.panes.index(n.pane), n.copy()) for n in self.notes if n.pane in self.panes]
+        return self.layout(), notes
 
     def can_undo(self):
         return bool(self._undo)
@@ -754,23 +855,33 @@ class WaveformViewer(QWidget):
     def can_redo(self):
         return bool(self._redo)
 
-    def _restore(self, layout):
+    def _restore(self, state):
+        layout, notes = state
         self._quiet = True
         try:
+            for n in self.notes:
+                n.erase()
+            self.notes = []
             self.clear_panes()
             self.apply_layout(layout)
         finally:
             self._quiet = False
+        for i, n in notes:
+            if i < len(self.panes):
+                n = n.copy()
+                n.pane = self.panes[i]
+                self.notes.append(n)
+                n.draw()
         self.traces_changed.emit()
 
     def undo(self):
         if self._undo:
-            self._redo.append(self.layout())
+            self._redo.append(self._state())
             self._restore(self._undo.pop())
 
     def redo(self):
         if self._redo:
-            self._undo.append(self.layout())
+            self._undo.append(self._state())
             self._restore(self._redo.pop())
 
     def clear_panes(self):
@@ -778,6 +889,7 @@ class WaveformViewer(QWidget):
         for c in list(self.cursors):
             self.detach_cursor(c.index)
         for p in self.panes[1:]:
+            self._drop_notes(p)
             p.setParent(None)
             p.deleteLater()
         self.panes = self.panes[:1]
@@ -789,9 +901,11 @@ class WaveformViewer(QWidget):
         self.mode = "delete"
         self.traces_changed.emit()
         self.setCursor(icons_cursor("scissors"))
-        self.status.emit("Click on a trace label to delete it.  Right-click or Esc to quit.")
+        self.status.emit("Click on a trace label or an annotation to delete it.  Right-click or Esc to quit.")
 
     def end_mode(self):
+        if self.carry is not None:
+            self._cancel_carry()
         self.mode = None
         self._anno_start = None
         self.unsetCursor()
@@ -959,11 +1073,7 @@ class WaveformViewer(QWidget):
         self.status.emit(what + "  Right-click to quit.")
 
     def annotation_click(self, pane, pt):
-        from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem, QInputDialog
-        vb = pane.plot.getPlotItem().getViewBox()
-        pen = QPen(self.annot_color)
-        pen.setCosmetic(True)
-        pen.setWidthF(1.5)
+        from PySide6.QtWidgets import QInputDialog
         if self.mode == "text":
             text, ok = QInputDialog.getText(self, "Text", "Enter text:")
             if ok and text:
@@ -974,35 +1084,75 @@ class WaveformViewer(QWidget):
             return
         _, p0 = self._anno_start
         self._anno_start = None
-        if self.mode in ("line", "arrow"):
-            item = pg.PlotCurveItem([p0.x(), pt.x()], [p0.y(), pt.y()], pen=pen)
-            vb.addItem(item, ignoreBounds=True)
-            self.annotations.append((vb, item))
-            if self.mode == "arrow":
-                # pyqtgraph arrows point along -angle in screen space; aim from tail to head
-                a, b = vb.mapViewToScene(p0), vb.mapViewToScene(pt)
-                import math
-                ang = math.degrees(math.atan2(b.y() - a.y(), b.x() - a.x())) + 180
-                head = pg.ArrowItem(pos=(pt.x(), pt.y()), angle=ang, headLen=12, pen=pen,
-                                    brush=self.annot_color)
-                vb.addItem(head, ignoreBounds=True)
-                self.annotations.append((vb, head))
-        else:
-            x0, x1 = sorted((p0.x(), pt.x()))
-            y0, y1 = sorted((p0.y(), pt.y()))
-            cls = QGraphicsRectItem if self.mode == "rect" else QGraphicsEllipseItem
-            item = cls(x0, y0, x1 - x0, y1 - y0)
-            item.setPen(pen)
-            vb.addItem(item, ignoreBounds=True)
-            self.annotations.append((vb, item))
+        self.add_note(Note(self.mode, pane, [(p0.x(), p0.y()), (pt.x(), pt.y())], self.annot_color))
 
-    def _add_text(self, pane, x, y, text):
-        vb = pane.plot.getPlotItem().getViewBox()
-        item = pg.TextItem(text, color=self.annot_color, anchor=(0, 1))
-        item.setFont(plot_font())
-        item.setPos(x, y)
-        vb.addItem(item, ignoreBounds=True)
-        self.annotations.append((vb, item))
+    def add_note(self, note):
+        self.record()
+        self.notes.append(note)
+        note.draw()
+        return note
+
+    def _add_text(self, pane, x, y, text, color=None, anchor=(0, 1)):
+        return self.add_note(Note("text", pane, [(x, y)], color or self.annot_color, text, anchor))
+
+    # Edit > Move / Stretch / Duplicate / Delete on annotations (plot right-click menu)
+    def start_note_edit(self, mode):
+        self.mode = mode
+        self.carry = None
+        self.setCursor(icons_cursor({"note_move": "move", "note_stretch": "drag",
+                                     "note_dup": "duplicate"}[mode]))
+        self.traces_changed.emit()
+        what = {"note_move": "move", "note_stretch": "stretch (drag an end or corner)",
+                "note_dup": "duplicate"}[mode]
+        self.status.emit(f"Click an annotation to {what}.  Right-click or Esc to quit.")
+
+    def note_at(self, pane, pos):
+        return next((n for n in reversed(self.notes) if n.pane is pane and n.hit(pos)), None)
+
+    def note_click(self, pane, pos):
+        """A left click in an annotation-editing mode (or Delete Traces). True if it was used."""
+        if self.carry is not None:
+            self.note_drag(pos)                     # drop what's carried right here
+            self.carry = None
+            self.status.emit("")
+            return True
+        note = self.note_at(pane, pos)
+        if note is None:
+            return False
+        self.record()
+        if self.mode == "delete":
+            note.erase()
+            self.notes.remove(note)
+            self.traces_changed.emit()
+            return True
+        if self.mode == "note_dup":
+            note = note.copy()
+            self.notes.append(note)
+            note.draw()
+        which = note.nearest_point(pos) if self.mode == "note_stretch" and len(note.pts) > 1 else None
+        self.carry = (note, which, note.vb.mapSceneToView(pos), list(note.pts))
+        self.traces_changed.emit()
+        return True
+
+    def note_drag(self, pos):
+        note, which, start, orig = self.carry
+        p = note.vb.mapSceneToView(pos)
+        dx, dy = p.x() - start.x(), p.y() - start.y()
+        note.pts = [(x + dx, y + dy) if which is None or i == which else (x, y)
+                    for i, (x, y) in enumerate(orig)]
+        note.draw()
+
+    def _cancel_carry(self):
+        note, _, _, orig = self.carry
+        self.carry = None
+        if self.mode == "note_dup":
+            note.erase()
+            self.notes.remove(note)
+        else:
+            note.pts = orig
+            note.draw()
+        if self._undo:
+            self._undo.pop()                        # nothing changed after all
 
     def annotate_cursor(self):
         """Notes & Annotations > Cursor Position: label cursor 1 with its coordinates."""
@@ -1059,36 +1209,23 @@ class WaveformViewer(QWidget):
                 i = min(int(np.searchsorted(xs, x1, "right")), len(xs)) - 1
                 if i < 0 or k >= len(labels) or not labels[k]:
                     continue
-                label = pg.TextItem(labels[k], color=t.color, anchor=(1, 1))
-                label.setFont(plot_font())
-                label.setPos(xs[i], ys[i])
-                vb.addItem(label, ignoreBounds=True)
-                self.annotations.append((vb, label))
+                self._add_text(pane, xs[i], ys[i], labels[k], t.color, (1, 1))
 
     def _add_marker(self, pane, x, y, text, color):
-        vb = pane.plot.getPlotItem().getViewBox()
-        dot = pg.ScatterPlotItem([x], [y], size=7, symbol="o", pen=pg.mkPen(color), brush=None)
-        vb.addItem(dot, ignoreBounds=True)
-        label = pg.TextItem(text, color=color, anchor=(-0.05, 1.1))
-        label.setFont(plot_font())
-        label.setPos(x, y)
-        vb.addItem(label, ignoreBounds=True)
+        note = self.add_note(Note("marker", pane, [(x, y)], color, text, (-0.05, 1.1)))
         # margins of several traces/steps land close together: try rows above and below the
         # point, nearest first, for one that clears the other labels and stays in the plot
-        others = [it.sceneBoundingRect() for v, it in self.annotations
-                  if v is vb and getattr(it, "is_marker_label", False)]
-        area = vb.sceneBoundingRect()
+        others = [n.label.sceneBoundingRect() for n in self.notes
+                  if n is not note and n.kind == "marker" and n.pane is pane]
+        area = note.vb.sceneBoundingRect()
         # anchor y: 1.1 = just above the point, -0.1 = just below, each step one more line
         rows = [1.1] + [y for n in range(1, 6) for y in (1.1 + n, -0.1 - (n - 1))]
-        for ay in rows:
-            label.setAnchor((-0.05, ay))
-            r = label.sceneBoundingRect()
+        for ay in rows + [1.1]:
+            note.anchor = (-0.05, ay)
+            note.label.setAnchor(note.anchor)
+            r = note.label.sceneBoundingRect()
             if area.contains(r) and not any(r.intersects(o) for o in others):
                 break
-        else:
-            label.setAnchor((-0.05, 1.1))
-        label.is_marker_label = True
-        self.annotations += [(vb, dot), (vb, label)]
 
     def annotation_style_dialog(self):
         from PySide6.QtWidgets import QColorDialog
@@ -1123,6 +1260,7 @@ def icons_cursor(name):
 
 _CURSORS = None
 ANNOTATIONS = ("text", "arrow", "line", "rect", "ellipse")
+NOTE_EDIT = ("delete", "note_move", "note_stretch", "note_dup")
 
 
 class AddTracesDialog(QDialog):

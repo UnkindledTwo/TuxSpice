@@ -82,7 +82,7 @@ Redraw, Add Plot Pane Above/Below, Move Plot Pane Up/Down, Delete this Pane, Syn
 Notes & Annotations >, Edit > (Move, Stretch, Delete, Duplicate, Undo, Redo), Copy Image to
 Clipboard, Marching Waveforms >, File > (Save Plot Settings, Save As, Reload, Print, Print Preview,
 Export data as text, Execute .MEAS Script, Convert to Fast Access), Float Window, Waveform Settings
-(Settings on the Waveforms tab). ✅ (annotation Move/Stretch/Duplicate ❌)
+(Settings on the Waveforms tab). ✅ (Move M / Stretch S / Duplicate Ctrl+C act on annotations; Delete Traces mode also deletes a clicked annotation; all undoable)
 
 Keys that LTspice reuses across window kinds (A, C, D, P, B, R, T, I, L, U, Del, F5, Ctrl+Z, Ctrl+G,
 Ctrl+S) act on the active window kind only.

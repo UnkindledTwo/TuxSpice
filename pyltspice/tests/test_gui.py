@@ -618,7 +618,6 @@ def test_phase_and_gain_margin_math():
 
 def test_annotate_margins_and_steps(qapp):
     import numpy as np
-    import pyqtgraph as pg
     from pyltspice.sim.rawfile import Plot, Variable
     from pyltspice.ui.main_window import MainWindow, PlotWindow
     f = np.logspace(0, 6, 601)
@@ -636,11 +635,79 @@ def test_annotate_margins_and_steps(qapp):
     win._add_window(PlotWindow(v, None), "t.raw")
     qapp.processEvents()
     win._update_actions()
-    texts = lambda: [it.textItem.toPlainText() for _, it in v.annotations if isinstance(it, pg.TextItem)]
+    texts = lambda: [n.text for n in v.notes]
     win.actions["notes_gm"].trigger()
     assert texts() == ["Gain Margin: 6.0dB @ 1.732kHz", "Gain Margin: 12.0dB @ 1.732kHz"]
     win.actions["notes_pm"].trigger()
     assert sum(t.startswith("Phase Margin") for t in texts()) == 2
     win.actions["notes_steps"].trigger()
     assert texts()[-2:] == ["Step 1: K=4", "Step 2: K=2"]
+    win.close()
+
+
+def test_move_stretch_duplicate_delete_annotations(qapp):
+    """Plot right-click > Edit works on annotations: M moves one, S drags the nearest end,
+    Ctrl+C copies, Del deletes; right-click cancels a carry; Ctrl+Z undoes each step."""
+    from PySide6.QtCore import QPointF
+    from pyltspice.ui.main_window import MainWindow, PlotWindow
+    from pyltspice.ui.waveform import Note
+    win = MainWindow()
+    win.resize(1000, 800)
+    win.show()
+    v = win._new_viewer(_tran_plot(), "t.raw")
+    v.add_trace("V(a)")
+    win._add_window(PlotWindow(v, None), "t.raw")
+    qapp.processEvents()
+    pane = v.panes[0]
+    vb = pane.plot.getPlotItem().getViewBox()
+    vb.setRange(xRange=(0, 1e-3), yRange=(-1, 1), padding=0)
+    qapp.processEvents()
+    line = v.add_note(Note("line", pane, [(2e-4, 0), (4e-4, 0)], "red"))
+    scene = lambda x, y: vb.mapViewToScene(QPointF(x, y))
+
+    def click(x, y, button=Qt.LeftButton):
+        view = pane.plot
+        p = view.mapFromScene(scene(x, y))
+        QTest.mouseMove(view.viewport(), p)
+        QTest.mouseClick(view.viewport(), button, Qt.NoModifier, p)
+        qapp.processEvents()
+
+    win._update_actions()
+    assert win.actions["ctx_plot_move"].isEnabled() and not win.actions["edit_move"].isEnabled()
+    win.actions["ctx_plot_move"].trigger()
+    click(3e-4, 0)                                   # pick the line in its middle...
+    click(3e-4, 0.5)                                 # ...and drop it 0.5 V higher
+    (x0, y0), (x1, y1) = line.pts
+    assert abs(y0 - 0.5) < 0.02 and abs(y1 - 0.5) < 0.02 and abs(x1 - x0 - 2e-4) < 1e-9
+    click(3e-4, 0.5)                                 # pick again, drag, right-click: back where it was
+    v.note_drag(scene(3e-4, -0.5))
+    assert abs(line.pts[0][1] + 0.5) < 0.02
+    v.context_menu(pane, QPoint())
+    assert abs(line.pts[0][1] - 0.5) < 0.02 and v.mode is None and v.carry is None
+
+    win.actions["ctx_plot_stretch"].trigger()
+    click(4e-4, 0.5)                                 # grab the right end
+    click(8e-4, -0.5)
+    assert abs(line.pts[0][0] - 2e-4) < 1e-5 and abs(line.pts[1][0] - 8e-4) < 1e-5
+    assert abs(line.pts[1][1] + 0.5) < 0.02
+    v.end_mode()
+
+    win.actions["ctx_plot_duplicate"].trigger()
+    click(2e-4, 0.5)
+    click(2e-4, -0.8)
+    assert len(v.notes) == 2 and abs(v.notes[1].pts[0][1] + 0.8) < 0.02
+    v.end_mode()
+
+    win.actions["plot_delete_traces"].trigger()
+    click(2e-4, 0.5)                                 # the original line's left end
+    assert v.notes == [v.notes[0]] and v.notes[0].pts[0][1] < -0.7
+    assert len(pane.traces) == 1                     # clicking an annotation leaves traces alone
+    v.end_mode()
+    v.undo()                                         # deleted line comes back
+    assert len(v.notes) == 2
+    v.undo()                                         # the duplicate goes
+    v.undo()                                         # the stretch is undone
+    assert len(v.notes) == 1 and abs(v.notes[0].pts[1][0] - 4e-4) < 1e-5
+    v.redo()
+    assert abs(v.notes[0].pts[1][0] - 8e-4) < 1e-5
     win.close()

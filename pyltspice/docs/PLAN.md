@@ -171,8 +171,11 @@ Open:
 - Notes & Annotations > Annotate Phase Margin / Gain Margin / Steps (`waveform.phase_margin`,
   `gain_margin`): every AC trace (and shown `.step` run) of the active pane gets a marker and
   label; crowded labels move to the nearest free row.
+- Plot annotations are `waveform.Note` data (redrawn from view coordinates): plot Edit > Move,
+  Stretch (nearest end/corner), Duplicate and Delete work on them, and Plot Settings > Undo/Redo
+  covers them along with the traces.
 - Next from Wine: still greyed: symbol editor, buses (BUS tap), marching waveforms,
-  efficiency report/calculation, eye diagram, Nyquist unit circle, moving annotations. Also Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks, the
+  efficiency report/calculation, eye diagram, Nyquist unit circle. Also Windows-style blue MDI title bars, LTspice's `5.0V`-style axis ticks, the
   bottom of the Plot Settings menu (scrolled off the 900 px Wine screen: use a taller Xephyr),
   and checking the editing dialogs (component, analysis) against LTspice.
 
