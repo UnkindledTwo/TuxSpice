@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from ..model import asc
 from ..model.geometry import GRID, apply, orient_matrix
-from ..model.library import default_library, schematic_dirs
+from ..model.library import default_library, sch_dirs
 from ..model.netlist import connectivity
 from .items import (DataFlagItem, FlagItem, GraphicItem, JunctionItem, SymbolItem,
                     TextItem, WireItem)
@@ -36,7 +36,7 @@ class SchematicScene(QGraphicsScene):
 
     @property
     def local_dirs(self):
-        return schematic_dirs(self.sch.path)
+        return sch_dirs(self.sch)
 
     def rebuild(self):
         self.clear()

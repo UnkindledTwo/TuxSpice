@@ -873,3 +873,35 @@ def test_dark_theme_icons_readable_and_restorable(qapp):
     after = {k: a.icon().pixmap(32, 32).toImage() for k, a in shown.items()}
     assert after == before
     win.close()
+
+
+def test_paste_brings_symbols_from_the_source_folder(qapp, tmp_path, monkeypatch):
+    """A part whose symbol sits next to its schematic, pasted into a schematic elsewhere:
+    untitled targets search the source folder, saved ones get the .asy copied next to them."""
+    from PySide6.QtWidgets import QMessageBox
+    from pyltspice.ui import tools
+    from pyltspice.ui.main_window import MainWindow
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir(), dst.mkdir()
+    (src / "widget.asy").write_text("Version 4\nSymbolType CELL\nRECTANGLE Normal -16 -16 16 16\n"
+                                    "SYMATTR Prefix X\nPIN -16 0 LEFT 8\nPINATTR PinName a\nPINATTR SpiceOrder 1\n")
+    part = asc.SymbolInst("widget", 0, 0, "R0", {}, {"InstName": "U1"})
+    tools.copy_to_clipboard([part], [src])
+    win = MainWindow()
+    win.show()
+    win.new_schematic()
+    sw = win.schematic()
+    sw.start_paste()                                           # untitled: search src as well
+    assert src in sw.doc.local_dirs and sw.doc.lib.find("widget", sw.doc.local_dirs) is not None
+    sw.set_tool(None)
+    sw.doc.undo.setClean()
+    (dst / "b.asc").write_text("Version 4\nSHEET 1 880 680\n")
+    win.open_file(str(dst / "b.asc"))
+    sw = win.schematic()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    sw.start_paste()
+    assert (dst / "widget.asy").exists() and sw.doc.lib.get("widget", sw.doc.local_dirs) is not None
+    sw.set_tool(None)
+    for s in win.mdi.subWindowList():
+        s.widget().doc.undo.setClean()
+    win.close()

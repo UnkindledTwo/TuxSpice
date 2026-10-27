@@ -107,6 +107,12 @@ def schematic_dirs(sch_path) -> list:
     return [folder] + list(_subdirs(str(folder), stamp))
 
 
+def sch_dirs(sch) -> list:
+    """schematic_dirs plus folders added to this schematic in the session (`sch.extra_dirs`:
+    e.g. where pasted parts came from, while the schematic is still untitled)."""
+    return schematic_dirs(sch.path) + [d for d in getattr(sch, "extra_dirs", []) if d]
+
+
 @lru_cache(maxsize=64)
 def _subdirs(folder: str, _stamp) -> tuple:
     out, level = [], [Path(folder)]

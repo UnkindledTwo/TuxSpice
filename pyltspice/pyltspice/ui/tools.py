@@ -528,13 +528,15 @@ class DeleteTool(_BoxSelectTool):
 
 
 CLIP_MIME = "application/x-tuxspice-asc"
+CLIP_DIRS = "application/x-tuxspice-dirs"     # folders the source schematic found its symbols in
 
 
-def copy_to_clipboard(objs):
+def copy_to_clipboard(objs, source_dirs=()):
     """Duplicate also puts what it picked on the clipboard, as .asc text, so Ctrl+V can
     paste it into another schematic (LTspice: "copy from one schematic to another")."""
     mime = QMimeData()
     mime.setData(CLIP_MIME, asc.Schematic(items=list(objs)).to_text().encode("utf-8"))
+    mime.setData(CLIP_DIRS, "\n".join(str(d) for d in source_dirs).encode("utf-8"))
     QApplication.clipboard().setMimeData(mime)
     atexit.unregister(_release_clipboard)
     atexit.register(_release_clipboard)
@@ -551,6 +553,14 @@ def _release_clipboard():
 def clipboard_has_objects():
     mime = QApplication.clipboard().mimeData()
     return mime is not None and mime.hasFormat(CLIP_MIME)
+
+
+def clipboard_source_dirs():
+    from pathlib import Path
+    mime = QApplication.clipboard().mimeData()
+    if mime is None or not mime.hasFormat(CLIP_DIRS):
+        return []
+    return [Path(d) for d in bytes(mime.data(CLIP_DIRS)).decode("utf-8", "replace").splitlines() if d]
 
 
 def clipboard_objects():
@@ -602,7 +612,7 @@ class MoveTool(_BoxSelectTool):
     def picked(self, objs, box):
         self.doc.begin()
         if self.mode == "duplicate":
-            copy_to_clipboard(objs)
+            copy_to_clipboard(objs, self.doc.local_dirs)
             objs = ed.clone(objs)
             ed.rename_copies(self.doc.sch, objs, self.doc.lib, self.doc.local_dirs)
         self.carry = objs

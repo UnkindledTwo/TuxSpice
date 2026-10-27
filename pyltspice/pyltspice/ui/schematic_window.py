@@ -115,7 +115,38 @@ class SchematicWindow(QWidget):
     def start_paste(self):
         objs = tools.clipboard_objects()
         if objs:
+            self._bring_local_symbols(objs, tools.clipboard_source_dirs())
             self.set_tool(tools.PasteTool(self, objs))
+
+    def _bring_local_symbols(self, objs, source_dirs):
+        """Pasted parts whose symbols lived next to the source schematic: copy those .asy files
+        (and a hierarchical block's .asc) next to this one, or, while this schematic is
+        untitled, search the source folders too."""
+        import shutil
+        lib, here = self.doc.lib, self.doc.local_dirs
+        missing = {}
+        for o in objs:
+            if isinstance(o, asc.SymbolInst) and lib.find(o.symbol, here) is None:
+                src = lib.find(o.symbol, source_dirs)
+                if src is not None and any(src.parent == Path(d) or Path(d) in src.parents for d in source_dirs):
+                    missing[src.name.lower()] = src
+        if not missing:
+            return
+        if self.doc.sch.path is None:
+            self.doc.sch.extra_dirs = list(getattr(self.doc.sch, "extra_dirs", [])) + \
+                [d for d in source_dirs if d not in getattr(self.doc.sch, "extra_dirs", [])]
+        else:
+            dest = self.doc.sch.path.parent
+            names = ", ".join(sorted(p.name for p in missing.values()))
+            if QMessageBox.question(self, "Paste", f"The pasted parts use symbols from another folder: {names}\n\n"
+                                    f"Copy them to {dest}?") != QMessageBox.Yes:
+                return
+            for src in missing.values():
+                for f in (src, src.with_suffix(".asc")):
+                    if f.exists() and not (dest / f.name).exists():
+                        shutil.copy2(f, dest / f.name)
+        lib._cache.clear()
+        self.doc.scene.rebuild()
 
     def place_symbol(self, symbol_name, attrs=None, label="Place Component"):
         sym = self.doc.lib.get(symbol_name, self.doc.local_dirs)
