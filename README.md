@@ -50,7 +50,9 @@ It is written in Python with PySide6 (Qt), pyqtgraph and numpy.
   AF117/139), diodes (1N4001–1N4004, 1N5408, FR107, UF4007, MUR160, 1N5822, BAT85, 1N47xxA and
   BZX84 zeners, 5 mm LEDs, germanium 1N34A, 1N60, 1N270, OA90/91/95, AA119), MOSFETs (2N7000, BS250, AO3400, IRF520/540/540N/640/740/3205,
   IRLZ44N, IRF9540, IRF9Z34N) and JFETs (2N5457/5458/5460, BF245A, MPF102). They are
-  approximations (no darlingtons yet; op-amps don't model common-mode limits or noise), and
+  approximations (germanium parts include leakage: Icbo that doubles about every 9 °C, Iceo ≈
+  hFE·Icbo with an open base, and diode leakage that grows with reverse voltage; no darlingtons
+  yet; op-amps don't model common-mode limits or noise), and
   schematics using them need TuxSpice's model files to run in LTspice.
 - **Simulation**: netlists the schematic and translates the LTspice dialect for ngspice:
   - parasitics (`Rser`, `Cpar`, ...), one-argument `.tran`, `.lib`, default models, `table()`,

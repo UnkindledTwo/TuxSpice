@@ -253,3 +253,45 @@ def test_schematic_with_bundled_opamp_simulates(tmp_path):
     res = Simulator(nl, tmp_path / "u1").run()
     assert res.ok, res.errors
     assert abs(float(np.real(VectorSet(res.plots[0]).get("V(out)"))[0]) - 2.002) < 1e-3
+
+
+# germanium leakage, typical at 25 C: transistors Icbo (Vcb = 10 V); diodes (V, I) reverse points
+GE_ICBO = {"AC125": 2e-6, "AC126": 2e-6, "AC127": 4e-6, "AC128": 8e-6, "AC187": 8e-6, "AC188": 8e-6,
+           "OC44": 2e-6, "OC45": 2e-6, "OC71": 4e-6, "OC72": 6e-6, "2N404": 2e-6, "2N1305": 3e-6,
+           "2N1308": 3e-6, "AF117": 1e-6, "AF139": 1e-6}
+GE_DIODE_LEAK = {"1N34A": ((1, 3e-6), (50, 170e-6)), "1N60": ((1, 2e-6), (30, 100e-6)),
+                 "1N270": ((1, 1e-6), (50, 30e-6)), "OA90": ((1, 3e-6), (20, 60e-6)),
+                 "OA91": ((1, 1.5e-6), (50, 40e-6)), "OA95": ((1, 1.5e-6), (50, 40e-6)),
+                 "AA119": ((1, 3e-6), (30, 80e-6))}
+
+
+def test_germanium_leakage(tmp_path):
+    """Germanium leaks: Icbo is microamps and roughly doubles every 9-10 C, an open base turns it
+    into Iceo ~ hFE x Icbo (what fuzz-pedal biasing fights), and diode leakage grows with
+    reverse voltage."""
+    cards = _cards("bjt")
+    assert {n for n in cards if "germanium" in _card_text("bjt", n)} == set(GE_ICBO)
+    lines = []
+    for k, name in enumerate(GE_ICBO):
+        s = -1 if cards[name] == "PNP" else 1
+        lines += [f"Vc{k} c{k} 0 {10 * s}", f"Q{k} c{k} 0 e{k} {name}", f"Re{k} e{k} 0 1G",       # emitter open
+                  f"Vo{k} o{k} 0 {6 * s}", f"Qo{k} o{k} b{k} 0 {name}", f"Rb{k} b{k} 0 1G"]       # base open
+    for k, (name, pts) in enumerate(GE_DIODE_LEAK.items()):
+        lines += [f"Vd{k}_{j} d{k}_{j} 0 {-v}" + f"\nD{k}_{j} d{k}_{j} 0 {name}" for j, (v, _) in enumerate(pts)]
+    body = "\n".join(lines) + "\n.lib tuxspice.bjt\n.lib tuxspice.dio\n"
+    v25 = _op(tmp_path, body + ".temp 25\n", "ge25")
+    v35 = _op(tmp_path, body + ".temp 35\n", "ge35")
+    for k, (name, icbo) in enumerate(GE_ICBO.items()):
+        got = abs(v25(f"I(Vc{k})"))
+        assert 0.7 * icbo < got < 1.4 * icbo, (name, got)
+        assert 1.6 < abs(v35(f"I(Vc{k})")) / got < 2.8, (name, abs(v35(f"I(Vc{k})")) / got)
+        assert abs(v25(f"I(Vo{k})")) > 20 * got, (name, abs(v25(f"I(Vo{k})")))          # Iceo >> Icbo
+    for k, (name, pts) in enumerate(GE_DIODE_LEAK.items()):
+        for j, (_, want) in enumerate(pts):
+            got = abs(v25(f"I(Vd{k}_{j})"))
+            assert 0.6 * want < got < 1.6 * want, (name, pts[j], got)
+
+
+def _card_text(ext, name):
+    return next(l for l in (config.BUNDLED_MODELS / f"tuxspice.{ext}").read_text().splitlines()
+                if l.startswith(f".model {name} "))
