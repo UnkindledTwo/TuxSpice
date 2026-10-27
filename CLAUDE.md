@@ -35,7 +35,8 @@ suite (no PCB) and not a new simulator.
   (no window / schematic / waveform) and both right-click menus as data; `settings_dialog.py` is
   Tools > Settings (ten tabs, `SPEC` lists every key with its default and whether LTspice
   remembers it, i.e. shows [*]); plus `schematic_window`/`schematic_view`/`items`/`tools`
-  (editing), `waveform.py` (pyqtgraph plots), dialogs, `theme.py` (LTspice default colors, saved in QSettings).
+  (editing), `waveform.py` (pyqtgraph plots), dialogs, `theme.py` (LTspice default colors, saved in QSettings),
+  `appearance.py` (light/dark window palettes; icons are lightened for contrast on dark toolbars).
 - `mcp/`: MCP server for AI assistants, mirroring LTspice 26.1's `ltspice-mcp-bridge` (tool names,
   arguments and string-valued JSON replies were captured from the real bridge under Wine). `bridge.py`
   is the stdio server (`pyltspice-mcp`, `python -m pyltspice.mcp`); it attaches to a running window
@@ -82,6 +83,8 @@ QT_QPA_PLATFORM=offscreen ../.venv/bin/python scripts/gui_smoke.py ...  # drive 
 - `test_asc.py` round-trips **every** example `.asc` in the extracted library, so `.asc` writer changes must preserve it.
 - To check visual changes, render them to PNG (`render_png.py` / `gui_smoke.py`) and look at the image.
   Don't rely only on the tests.
+  Check dark themes too: the user's desktop is GNOME-based with a dark GTK theme; render with
+  `QT_QPA_PLATFORMTHEME=gtk3` (offscreen still works) and let layout settle before grabbing.
 - `tests/` is a package (`__init__.py`); test modules import helpers via `from .conftest import ...`.
 - GUI tests hang on any modal: right-click in idle mode opens a context menu (`QMenu.exec`), and
   closing a modified schematic asks to save. Leave modes with right-click only while a tool is
