@@ -47,7 +47,7 @@ Roadmap context is in `PLAN.md`; UI parity status in `ui_spec.md`.
   `I(@r.x1.r1[i])` in the parent's plot. Always save the vectors of hierarchical-sheet instances
   (LTspice does) whatever Save Defaults says.
 
-### 5. `$G_` global nets aren't global across the hierarchy
+### 5. ✅ FIXED (f9d3657): `$G_` global nets aren't global across the hierarchy
 - **Why:** this is wrong-netlist territory. A `$G_VDD` label inside a sheet should join the
   top-level `$G_VDD`. Today it's only drawn as global (`ui_spec.md`: ◐).
 - **Way in:** in `generate_netlist`, emit `$G_` nets as `.global`, or keep their names unprefixed
@@ -67,7 +67,7 @@ Roadmap context is in `PLAN.md`; UI parity status in `ui_spec.md`.
 - **Way in:** reuse the schematic editing tools on a `.asy` document (lines, rects, arcs, text,
   pins with PinName/SpiceOrder, attribute windows). `asy.py` already round-trips the format.
 
-### 8. Plot annotations are lost when a plot is reopened
+### 8. ✅ FIXED (02a105a): Plot annotations are lost when a plot is reopened
 - **Why:** notes, arrows, boxes and margin labels live only in memory. `pltfile.write_plt` only
   stores trace sections.
 - **Way in:** serialize `waveform.Note` (kind, pane index, view-coordinate points, colour, text)
@@ -105,7 +105,7 @@ Roadmap context is in `PLAN.md`; UI parity status in `ui_spec.md`.
   the Transient Frequency Response analysis (`.fra`), `.machine` / `.timedomain` (also counted in
   #2), `.wave` export, Fast Access files, New Blank Symbol (see #7).
 
-### 13. Paste between folders loses local symbols
+### 13. ✅ FIXED (9d880bf): Paste between folders loses local symbols
 - **Why:** Duplicate/Paste carries `.asc` text only. A part whose `.asy` sits next to the source
   schematic (or in a subfolder of it) shows up unresolved in a schematic in another folder.
 - **Way in:** put the source schematic's folder in the clipboard data as well, and offer to copy
@@ -124,7 +124,9 @@ Roadmap context is in `PLAN.md`; UI parity status in `ui_spec.md`.
 - **Way in:** a pure-Python MSI/CAB reader (`olefile` + a cabinet decoder) would remove the 7z
   dependency. An AppImage could bundle ngspice.
 
-### 16. Smaller UI parity gaps
+### 16. ◐ MOSTLY FIXED: Smaller UI parity gaps
+- Done: Ctrl+click average/RMS box (visible interval), always-on-top cheat sheet, I/O port shapes,
+  `.savebias`/`.loadbias`. Left: Transient Frequency Response tab (with #12 `.fra`), MDI title bars.
 - Configure Analysis has no Transient Frequency Response tab and no save/load-state options.
 - Ctrl+click on a trace label should show average/RMS directly; today it's in the label's menu.
 - The keyboard shortcut cheat sheet opens in a tab instead of an always-on-top window.

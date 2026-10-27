@@ -938,3 +938,50 @@ def test_annotations_saved_with_plot_settings(qapp, tmp_path):
     win.save_plot_settings(pw)
     assert not pltfile.notes_path(plt).exists()                  # no notes: no sidecar left behind
     win.close()
+
+
+def test_stats_box_cheat_sheet_and_port_shapes(qapp):
+    """Ctrl+click on a trace label: average/RMS over what's on screen; the shortcut cheat sheet
+    is an always-on-top window; I/O ports point in, out or both ways."""
+    import numpy as np
+    from PySide6.QtCore import QPointF
+    from pyltspice.sim.rawfile import Plot, Variable
+    from pyltspice.ui.items import FlagItem
+    from pyltspice.ui.main_window import MainWindow, PlotWindow
+    t = np.linspace(0, 2e-3, 4001)
+    plot = Plot(title="t", plotname="Transient Analysis", flags={"real"},
+                variables=[Variable(0, "time", "time"), Variable(1, "V(s)", "voltage")],
+                data=np.array([t, 1 + 2 * np.sin(2 * np.pi * 1e3 * t)]))
+    win = MainWindow()
+    win.show()
+    v = win._new_viewer(plot, "t.raw")
+    v.add_trace("V(s)")
+    win._add_window(PlotWindow(v, None), "t.raw")
+    pane = v.panes[0]
+    pane.plot.getPlotItem().getViewBox().setXRange(0, 1e-3, padding=0)    # one period on screen
+    qapp.processEvents()
+    s = v._stats(pane.traces[0])
+    assert abs(s["x1"] - 1e-3) < 1e-9 and abs(s["avg"] - 1) < 1e-3 and abs(s["rms"] - np.sqrt(3)) < 1e-3
+    from unittest import mock
+    from PySide6.QtWidgets import QLabel
+    with mock.patch("PySide6.QtWidgets.QApplication.keyboardModifiers", return_value=Qt.ControlModifier):
+        pane._label_clicked("0")                                 # Ctrl+click on the label
+    box = v._stats_dialog
+    assert box.isVisible() and "V(s)" in box.windowTitle()
+    texts = [w.text() for w in box.findChildren(QLabel)]
+    assert texts == ["Interval Start:", "0s", "Interval End:", "1ms", "Average:", "1V", "RMS:", "1.7321V"]
+    box.close()
+    win.show_shortcuts()
+    sheet = win._cheat_sheet
+    assert sheet.isVisible() and sheet.windowFlags() & Qt.WindowStaysOnTopHint
+    sheet.close()
+    win.close()
+    shapes = {}
+    for kind in ("In", "Out", "BiDir"):
+        item = FlagItem(asc.Flag(0, 0, "port", kind), free_dir="right")    # label right of its pin
+        poly = item._port_outline(item.boundingRect().adjusted(40, 0, 0, 0))
+        b = poly.boundingRect()
+        shapes[kind] = (poly.contains(QPointF(b.left() + 0.5, b.top() + 0.5)),
+                        poly.contains(QPointF(b.right() - 0.5, b.top() + 0.5)))
+    # a tip leaves that corner of the bounding box empty: In's points at the pin, Out's away
+    assert shapes == {"In": (False, True), "Out": (True, False), "BiDir": (False, False)}

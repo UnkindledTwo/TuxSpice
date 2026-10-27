@@ -493,6 +493,10 @@ class Pane(QWidget):
                 self.remove_trace(self.traces[i])
                 self.viewer.traces_changed.emit()
                 return
+            from PySide6.QtWidgets import QApplication
+            if QApplication.keyboardModifiers() & Qt.ControlModifier:
+                self.viewer.stats_box(self, self.traces[i])      # LTspice: Ctrl+click a label
+                return
             self.viewer.trace_menu(self, self.traces[i])
 
     def refresh_labels(self):
@@ -779,29 +783,59 @@ class WaveformViewer(QWidget):
             m.addAction("Remove Cursors", lambda: (self.detach_cursor(1), self.detach_cursor(2)))
         m.addSeparator()
         m.addAction(f"Delete {trace.expr}", lambda: (pane.remove_trace(trace), self.traces_changed.emit()))
-        stats = self._stats(trace)
-        if stats:
-            m.addAction(stats).setEnabled(False)
+        s = self._stats(trace)
+        if s:
+            u = unit_of(trace.expr)
+            m.addAction(f"Average: {fmt(s['avg'], u, 5)}   RMS: {fmt(s['rms'], u, 5)}").setEnabled(False)
         m.exec(pane.labels.mapToGlobal(pane.labels.rect().bottomLeft()))
 
     def _stats(self, trace):
-        """Average and RMS over the displayed interval (LTspice: Ctrl+click label)."""
+        """Average and RMS over the interval shown in the trace's pane (zoom in to narrow it),
+        first .step run; None for AC data."""
         if self.is_ac:
-            return ""
+            return None
         try:
             y = np.real(self.vectors.eval(trace.expr))
         except Exception:  # noqa: BLE001
-            return ""
-        x = self.x
+            return None
+        x = np.real(self.x)
         a, b = self.steps()[0]
-        x, y = x[a:b], y[a:b]
-        if len(x) < 2 or x[-1] == x[0]:
-            return ""
-        T = x[-1] - x[0]
-        avg = np.trapezoid(y, x) / T
-        rms = np.sqrt(np.trapezoid(y * y, x) / T)
-        u = unit_of(trace.expr)
-        return f"Average: {fmt(avg, u, 5)}   RMS: {fmt(rms, u, 5)}"
+        x, y = x[a:b], np.broadcast_to(y, self.x.shape)[a:b]
+        pane = trace.pane or self.panes[0]
+        x0, x1 = pane.plot.getPlotItem().getViewBox().viewRange()[0]
+        x0, x1 = max(x0, x[0]), min(x1, x[-1])
+        if len(x) < 2 or x1 <= x0:
+            return None
+        inside = (x > x0) & (x < x1)
+        xs = np.r_[x0, x[inside], x1]
+        ys = np.r_[np.interp(x0, x, y), y[inside], np.interp(x1, x, y)]
+        T = x1 - x0
+        return {"x0": x0, "x1": x1, "avg": np.trapezoid(ys, xs) / T,
+                "rms": np.sqrt(np.trapezoid(ys * ys, xs) / T)}
+
+    def stats_box(self, pane, trace):
+        """LTspice's Ctrl+click on a trace label: a small box with the waveform's average and RMS
+        over the interval on screen."""
+        from PySide6.QtWidgets import QFormLayout
+        s = self._stats(trace)
+        if s is None:
+            self.status.emit("Average and RMS need time-domain data")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Waveform: {trace.expr}")
+        form = QFormLayout(dlg)
+        xu, u = pane.bottom.unit, unit_of(trace.expr)
+        for label, text in (("Interval Start:", fmt(s["x0"], xu, 5)), ("Interval End:", fmt(s["x1"], xu, 5)),
+                            ("Average:", fmt(s["avg"], u, 5)), ("RMS:", fmt(s["rms"], u, 5))):
+            val = QLabel(text)
+            val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            form.addRow(label, val)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok)
+        bb.accepted.connect(dlg.accept)
+        form.addRow(bb)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        self._stats_dialog = dlg
+        dlg.show()
 
     def _delete_all(self, pane):
         self.record()

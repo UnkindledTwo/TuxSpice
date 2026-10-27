@@ -202,6 +202,7 @@ class FlagItem(SchItem):
                             "right": ("Left", self.GAP, 0), "left": ("Right", -self.GAP, 0)}[free_dir]
             if f.iopin:
                 dx, dy = dx * 3, dy * 3
+            self._dir = free_dir
             frame = TextFrame.from_just(just)
             self._text = (f.x + dx, f.y + dy, frame, 2, f.name)
             r = text_bounds(*self._text)
@@ -213,9 +214,28 @@ class FlagItem(SchItem):
         self._bounds = self._path.boundingRect().adjusted(-4, -4, 4, 4)
 
     def _port_outline(self, r: QRectF) -> QPainterPath:
-        """Pentagon/box drawn around I/O port labels."""
+        """Outline around an I/O port label. The help only says the three kinds are "drawn
+        differently"; this uses the usual convention: an input points into the circuit (toward
+        the pin), an output points away from it, a bidirectional port both ways."""
+        r = r.adjusted(-4, -2, 4, 2)
+        kind = (self.obj.iopin or "").lower()
+        near = {"right": "left", "left": "right", "down": "top", "up": "bottom"}[getattr(self, "_dir", "right")]
+        far = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}[near]
+        tips = {"in": {near}, "out": {far}, "bidir": {near, far}}.get(kind, set())
+        horiz = near in ("left", "right")
+        k = (r.height() if horiz else r.width()) / 2      # tip length: half the box's thickness
+        c = r.center()
+        pts = []
+        if horiz:
+            pts += [r.topLeft(), r.topRight()]
+            pts += [QPointF(r.right() + k, c.y())] if "right" in tips else []
+            pts += [r.bottomRight(), r.bottomLeft()]
+            pts += [QPointF(r.left() - k, c.y())] if "left" in tips else []
+        else:
+            pts += [r.topLeft()] + ([QPointF(c.x(), r.top() - k)] if "top" in tips else []) + [r.topRight()]
+            pts += [r.bottomRight()] + ([QPointF(c.x(), r.bottom() + k)] if "bottom" in tips else []) + [r.bottomLeft()]
         path = QPainterPath()
-        path.addRect(r.adjusted(-4, -2, 4, 2))
+        path.addPolygon(QPolygonF(pts + [pts[0]]))
         return path
 
     def paint(self, p, opt, widget=None):
@@ -229,7 +249,13 @@ class FlagItem(SchItem):
             return
         r = text_bounds(*self._text)
         if f.iopin:
-            p.drawPath(self._port_outline(r))
+            outline = self._port_outline(r)
+            p.drawPath(outline)
+            # a short lead from the pin to the outline's near side
+            b = outline.boundingRect()
+            to = {"right": QPointF(b.left(), f.y), "left": QPointF(b.right(), f.y),
+                  "down": QPointF(f.x, b.top()), "up": QPointF(f.x, b.bottom())}[getattr(self, "_dir", "right")]
+            p.drawLine(QPointF(f.x, f.y), to)
         elif f.name.startswith("$G_"):
             p.drawRect(r.adjusted(-2, 0, 2, 0))
         p.setPen(make_pen(self.color("flag")))

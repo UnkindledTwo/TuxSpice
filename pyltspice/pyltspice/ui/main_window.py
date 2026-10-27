@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
 from shiboken6 import isValid
 from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHeaderView, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                                QMainWindow, QMdiArea, QMessageBox, QPlainTextEdit, QTabBar,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -1408,14 +1408,44 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ help
     def show_shortcuts(self):
-        lines = []
+        """Help > Keyboard Shortcut Cheat Sheet: a small window that stays on top while you work
+        (as LTspice's does), schematic and waveform keys side by side."""
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+        old = getattr(self, "_cheat_sheet", None)
+        if old is not None and isValid(old):
+            old.raise_()
+            old.activateWindow()
+            return
+        groups = {"Schematic": [], "Waveform": [], "General": []}
+        seen = set()
         for k, a in self.actions.items():
-            if a.shortcuts():
-                keys = ", ".join(s.toString() for s in a.shortcuts())
-                lines.append(f"{a.text().split(chr(9))[0].replace('&', ''):<36}{keys}")
-        w = TextWindow("Keyboard Shortcuts", "\n".join(lines))
-        w.setReadOnly(True)
-        self._add_window(w, "Keyboard Shortcuts")
+            if not a.shortcuts() or getattr(a, "on", "any") == "never":
+                continue
+            name = a.text().split(chr(9))[0].replace("&", "")
+            group = {"sch": "Schematic", "paste": "Schematic", "plot": "Waveform"}.get(getattr(a, "on", ""), "General")
+            keys = ", ".join(s.toString(QKeySequence.NativeText) for s in a.shortcuts())
+            if (group, name) not in seen:
+                seen.add((group, name))
+                groups[group].append((name, keys))
+        dlg = QDialog(self, Qt.Tool | Qt.WindowStaysOnTopHint)
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        lay = QHBoxLayout(dlg)
+        for title, rows in groups.items():
+            t = QTableWidget(len(rows), 2)
+            t.setHorizontalHeaderLabels([title, "Key"])
+            t.verticalHeader().hide()
+            t.setEditTriggers(QTableWidget.NoEditTriggers)
+            t.setShowGrid(False)
+            for r, (name, keys) in enumerate(sorted(rows, key=lambda x: x[0].lower())):
+                t.setItem(r, 0, QTableWidgetItem(name))
+                t.setItem(r, 1, QTableWidgetItem(keys))
+            t.resizeColumnsToContents()
+            t.horizontalHeader().setStretchLastSection(True)
+            lay.addWidget(t)
+        dlg.resize(980, 520)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        self._cheat_sheet = dlg
+        dlg.show()
 
     def edit_shortcuts(self):
         shortcuts.ShortcutDialog(self.actions, self).exec()

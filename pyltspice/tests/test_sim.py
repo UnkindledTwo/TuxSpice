@@ -1,3 +1,4 @@
+import re
 import pytest
 import math
 
@@ -380,3 +381,23 @@ def test_global_nets_cross_the_hierarchy(tmp_path):
     assert res.ok, res.errors
     assert ".global $G_VDD" in (tmp_path / "top.ngspice.cir").read_text()
     assert abs(float(np.real(VectorSet(res.plots[0]).get("V(o)"))[0]) - 5.0) < 1e-6
+
+
+@needs_ngspice
+def test_savebias_then_loadbias(tmp_path):
+    """.savebias writes the solution as .nodeset lines next to the circuit; .loadbias reads them
+    back as starting guesses (the answer itself doesn't change)."""
+    nl = "* bias\nV1 in 0 5\nR1 in a 1k\nD1 a 0 D\n.op\n.savebias bias.txt\n.end\n"
+    res = Simulator(nl, tmp_path / "c").run()
+    assert res.ok, res.errors
+    text = (tmp_path / "bias.txt").read_text()
+    va = float(np.real(VectorSet(res.plots[0]).get("V(a)"))[0])
+    assert f".nodeset V(a)={va:.12g}" in text and ".nodeset V(in)=5" in text
+    res2 = Simulator(nl.replace(".savebias", ".loadbias"), tmp_path / "c2", [tmp_path]).run()
+    assert res2.ok and not res2.warnings
+    assert ".include" in (tmp_path / "c2.ngspice.cir").read_text()
+    assert abs(float(np.real(VectorSet(res2.plots[0]).get("V(a)"))[0]) - va) < 1e-4   # within reltol
+    tran = "* t\nV1 in 0 PULSE(0 5 1m 1n 1n 1 2)\nR1 in a 1k\nC1 a 0 1u\n.tran 3m\n.savebias late.txt time=2.5m\n.end\n"
+    assert Simulator(tran, tmp_path / "t").run().ok
+    v = float(re.search(r"V\(a\)=(\S+)", (tmp_path / "late.txt").read_text()).group(1))
+    assert abs(v - 5 * (1 - np.exp(-1.5))) < 0.05               # 1.5 tau into the step: 3.88 V

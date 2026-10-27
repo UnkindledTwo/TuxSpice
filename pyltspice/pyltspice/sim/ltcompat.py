@@ -48,6 +48,7 @@ class Translation:
     params: dict = field(default_factory=dict)      # numeric top-level .param values
     analysis: str = ""                               # tran / ac / dc / op / noise / tf
     dc_sweep: object = None                          # StepSpec for a .dc dec/oct/list sweep
+    savebias: tuple | None = None                    # (.savebias file, time or None), done by the runner
 
 
 def join_continuations(text: str):
@@ -1289,6 +1290,18 @@ def translate(text: str, search_dirs=(), default_devices=True, default_libraries
             elif head == ".fra":
                 tr.errors.append("LTspice's Frequency Response Analysis (.fra with @ probes) "
                                  "is not supported by TuxSpice")
+            elif head == ".savebias" and len(tok) > 1:
+                # the runner writes the solution as .nodeset lines after the run
+                t = next((spicenum.parse(x.split("=", 1)[1]) for x in tok[2:] if x.lower().startswith("time=")), None)
+                tr.savebias = (tok[1].strip('"'), t)
+            elif head == ".loadbias" and len(tok) > 1:
+                name = tok[1].strip('"')
+                p = next((Path(d) / name for d in search_dirs if (Path(d) / name).is_file()), None)
+                p = p or (Path(name) if Path(name).is_file() else None)
+                if p is None:
+                    tr.warnings.append(f".loadbias: {name} not found (run once with .savebias first)")
+                else:
+                    out.append(f'.include "{p.resolve()}"')
             elif head in (".wave", ".net", ".probe", ".loadbias", ".savebias"):
                 tr.warnings.append(f"{head} is not supported by ngspice and was ignored")
             else:

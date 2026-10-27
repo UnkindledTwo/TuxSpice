@@ -278,6 +278,29 @@ class Simulator:
         plots = read_raw(raw) if raw.exists() and raw.stat().st_size else []
         return [filter_vectors(p, self.options) for p in plots], text, raw
 
+    def _save_bias(self, plots, name, at_time):
+        """.savebias <file> [time=t]: node voltages of the operating point (or of the first
+        transient point at or after t) as .nodeset lines, which .loadbias reads back."""
+        import numpy as np
+        op = next((p for p in plots if p.analysis == "op"), None)
+        main = next((p for p in plots if p.analysis == "tran"), None)
+        if at_time is not None and main is not None:
+            src, col = main, int(np.searchsorted(np.real(main.x), at_time))
+        elif op is not None:
+            src, col = op, 0
+        elif main is not None:
+            src, col = main, 0
+        else:
+            return
+        col = min(col, src.data.shape[1] - 1)
+        lines = [f"* .savebias of {self.out_base.name}" + (f" at t={at_time:g}" if at_time is not None else "")]
+        for v in src.variables:
+            n = v.name.lower()
+            if v.kind == "voltage" and n.startswith("v(") and "#" not in n and not n.startswith("v(v__"):
+                lines.append(f".nodeset {v.name.upper()[0]}{v.name[1:]}={float(np.real(src.data[v.index, col])):.12g}")
+        path = Path(name) if Path(name).is_absolute() else self.out_base.parent / name
+        path.write_text("\n".join(lines) + "\n")
+
     def _listing(self, deck: str, workdir: Path) -> str:
         """Operation > Generate Expanded Listing: ngspice's flat netlist (subcircuits expanded)."""
         lines = [l for l in deck.splitlines() if not l.strip().lower().startswith(ANALYSIS_CARDS)
@@ -364,6 +387,8 @@ class Simulator:
                 if tr.measures:
                     parsed = [m for m in (measure.parse(l) for l in tr.measures) if m]
                     res.measurements = measure.run_measures(parsed, res.plots, tr.params)
+                if tr.savebias:
+                    self._save_bias(res.plots, *tr.savebias)
                 raw_out = self.out_base.with_suffix(".raw")
                 if len(runs) == 1:
                     raw_out.write_bytes(raw.read_bytes())
