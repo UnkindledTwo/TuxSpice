@@ -1316,6 +1316,7 @@ class MainWindow(QMainWindow):
                 if layout:
                     viewer.apply_layout(layout)
                     viewer.plt_path = plt
+                    viewer.load_notes(pltfile.read_notes(plt))
         viewer.save_plot_settings.connect(lambda pw=pw: self.save_plot_settings(pw))
         if isinstance(owner, SchematicWindow):
             owner.sim_plot = plot
@@ -1371,6 +1372,7 @@ class MainWindow(QMainWindow):
                 return
         name = pw.viewer.plot.plotname or "Transient Analysis"
         pltfile.write_plt(path, {name: pw.viewer.layout()})
+        pltfile.write_notes(path, pw.viewer.notes_data())
         pw.viewer.plt_path = Path(path)
         self._update_actions()
 
@@ -1668,6 +1670,7 @@ class MainWindow(QMainWindow):
         if layout:
             pw.viewer.clear_panes()
             pw.viewer.apply_layout(layout)
+        pw.viewer.load_notes(pltfile.read_notes(path))
         pw.viewer.plt_path = Path(path)
         self._update_actions()
 

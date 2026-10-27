@@ -905,3 +905,36 @@ def test_paste_brings_symbols_from_the_source_folder(qapp, tmp_path, monkeypatch
     for s in win.mdi.subWindowList():
         s.widget().doc.undo.setClean()
     win.close()
+
+
+def test_annotations_saved_with_plot_settings(qapp, tmp_path):
+    """Save Plot Settings keeps the notes (in <name>.plt.notes, leaving the .plt LTspice's own);
+    reloading the settings brings them back in their panes."""
+    from pyltspice.sim import pltfile
+    from pyltspice.ui.main_window import MainWindow, PlotWindow
+    from pyltspice.ui.waveform import Note
+    win = MainWindow()
+    win.show()
+    v = win._new_viewer(_tran_plot(), "t.raw")
+    v.add_trace("V(a)")
+    v.add_pane()
+    v.add_trace("V(b)", v.panes[1])
+    pw = PlotWindow(v, None)
+    win._add_window(pw, "t.raw")
+    v.add_note(Note("arrow", v.panes[1], [(1e-4, 0.5), (2e-4, 0.9)], "#ff0000"))
+    v._add_text(v.panes[0], 3e-4, 0.2, "peak")
+    plt = tmp_path / "t.plt"
+    v.plt_path = plt
+    win.save_plot_settings(pw)
+    assert pltfile.read_plt(plt)["transient analysis"] == [["V(a)"], ["V(b)"]]
+    assert "notes" not in plt.read_text().lower() and len(pltfile.read_notes(plt)) == 2
+    v.load_notes([])
+    assert not v.notes
+    win._load_plt(pw, plt)
+    kinds = sorted((n.kind, v.panes.index(n.pane), n.text) for n in v.notes)
+    assert kinds == [("arrow", 1, ""), ("text", 0, "peak")]
+    assert v.notes[0].items                                      # drawn again
+    v.load_notes([])
+    win.save_plot_settings(pw)
+    assert not pltfile.notes_path(plt).exists()                  # no notes: no sidecar left behind
+    win.close()

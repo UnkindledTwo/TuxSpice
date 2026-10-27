@@ -1,6 +1,10 @@
 """LTspice plot settings (.plt): which traces go in which pane, per analysis.
 
-Only the pane/trace layout is used; axis ranges and colour codes are ignored for now."""
+Only the pane/trace layout is used; axis ranges and colour codes are ignored for now.
+Plot annotations (Notes & Annotations) go in a sidecar, <name>.plt.notes (JSON): LTspice's
+examples show no annotation syntax to follow, and an unknown key could make LTspice reject
+the .plt, so the .plt itself stays plain LTspice."""
+import json
 import re
 from pathlib import Path
 
@@ -36,6 +40,27 @@ def write_plt(path, sections: dict, encoding="latin-1"):
             lines += ["   {", f"      traces: {len(traces)} {items}", "   }" + ("," if k < len(panes) - 1 else "")]
         lines.append("}")
     write_text(Path(path), "\n".join(lines) + "\n", encoding)
+
+
+def notes_path(plt) -> Path:
+    plt = Path(plt)
+    return plt.with_name(plt.name + ".notes")
+
+
+def write_notes(plt, notes: list):
+    """notes: [{pane, kind, pts, color, text, anchor}, ...]; an empty list removes the file."""
+    p = notes_path(plt)
+    if notes:
+        p.write_text(json.dumps({"version": 1, "notes": notes}, indent=1))
+    elif p.exists():
+        p.unlink()
+
+
+def read_notes(plt) -> list:
+    try:
+        return json.loads(notes_path(plt).read_text()).get("notes", [])
+    except (OSError, ValueError, AttributeError):
+        return []
 
 
 def plt_for(schematic_path) -> Path | None:

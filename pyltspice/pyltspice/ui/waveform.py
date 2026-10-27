@@ -1092,6 +1092,26 @@ class WaveformViewer(QWidget):
         note.draw()
         return note
 
+    def notes_data(self) -> list:
+        """Annotations as plain data for the .plt sidecar (pane index, view coordinates)."""
+        return [{"pane": self.panes.index(n.pane), "kind": n.kind, "pts": [list(p) for p in n.pts],
+                 "color": n.color.name(), "text": n.text, "anchor": list(n.anchor)}
+                for n in self.notes if n.pane in self.panes]
+
+    def load_notes(self, data: list):
+        for n in self.notes:
+            n.erase()
+        self.notes = []
+        for d in data:
+            try:
+                pane = self.panes[int(d["pane"])]
+                note = Note(d["kind"], pane, [tuple(p) for p in d["pts"]], d.get("color", "#ffffff"),
+                            d.get("text", ""), tuple(d.get("anchor", (0, 1))))
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            self.notes.append(note)
+            note.draw()
+
     def _add_text(self, pane, x, y, text, color=None, anchor=(0, 1)):
         return self.add_note(Note("text", pane, [(x, y)], color or self.annot_color, text, anchor))
 
